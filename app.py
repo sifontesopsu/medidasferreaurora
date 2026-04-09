@@ -12,7 +12,7 @@ st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wi
 # =========================================================
 # En Streamlit Cloud, guarda esto en secrets.toml como:
 # APPS_SCRIPT_URL = "https://script.google.com/macros/s/XXXX/exec"
-APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
+APPS_SCRIPT_URL = st.secrets.get("https://script.google.com/macros/s/AKfycbx_JcGXJ9e8A30y-M2ddT6xwCNVNRXfr8gcAtx-pYW-n4UGOAb2nIad-1EqwiaGSFCj4g/exec", "")
 
 ESTADOS_PDA = ["pendiente_medicion", "requiere_nueva_evidencia"]
 PRIORIDADES = ["alta", "media", "baja"]
