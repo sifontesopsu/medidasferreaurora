@@ -506,7 +506,12 @@ else:
         for i, (_, row) in enumerate(evidencias.iterrows()):
             with cols[i % 4]:
                 st.markdown(f"**{str(row['tipo_foto']).upper()}**")
-                st.image(row["drive_link"], use_container_width=True)
+                try:
+    import requests
+    img = requests.get(row["drive_link"], timeout=30).content
+    st.image(img, use_container_width=True)
+except:
+    st.warning("No se pudo mostrar imagen")
 
     comentario = st.text_area("Comentario supervisor")
     c1, c2 = st.columns(2)
