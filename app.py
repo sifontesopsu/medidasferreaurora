@@ -11,8 +11,8 @@ st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wi
 # CONFIG
 # =========================================================
 APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
-# Si quieres probar rápido, puedes usar esto temporalmente:
-# APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzgW62wqP7-RdDGH5Gd6YJ0Y7r636pLq9Lh1tcfZZzXclhKaEozA2Yq6xDiSKYl2amckw/exec"
+# Para prueba rápida:
+# APPS_SCRIPT_URL = "https://script.google.com/macros/s/TU_URL/exec"
 
 PRIORIDADES = ["alta", "media", "baja"]
 
@@ -138,6 +138,15 @@ def api_upload_photo(
             "medicion_id": medicion_id,
         }
     )
+
+
+def api_get_evidencias(sku: str, mlc: str) -> pd.DataFrame:
+    data = api_post({
+        "action": "get_evidencias",
+        "sku": sku,
+        "mlc": mlc
+    })
+    return pd.DataFrame(data.get("data", []))
 
 
 # =========================================================
@@ -468,12 +477,42 @@ else:
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
 
-    st.info("La visualización de fotos del supervisor será el siguiente bloque, una vez que confirmes que la subida a Drive funciona bien.")
+    st.markdown("### Evidencia fotográfica")
+    try:
+        evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
+    except Exception as e:
+        st.error(f"No se pudieron cargar evidencias: {e}")
+        evidencias = pd.DataFrame()
+
+    if evidencias.empty:
+        st.warning("No hay fotos disponibles")
+        faltan_fotos = True
+    else:
+        orden = ["alto", "ancho", "profundidad", "peso"]
+        evidencias["tipo_foto"] = evidencias["tipo_foto"].astype(str)
+        evidencias = evidencias.sort_values(
+            by="tipo_foto",
+            key=lambda col: col.map({k: i for i, k in enumerate(orden)}).fillna(99)
+        )
+
+        tipos = set(evidencias["tipo_foto"].tolist())
+        faltan_requeridas = [t for t in orden if t not in tipos]
+        faltan_fotos = len(faltan_requeridas) > 0
+
+        if faltan_fotos:
+            st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
+
+        cols = st.columns(4)
+        for i, (_, row) in enumerate(evidencias.iterrows()):
+            with cols[i % 4]:
+                st.markdown(f"**{str(row['tipo_foto']).upper()}**")
+                st.image(row["drive_link"], use_container_width=True)
 
     comentario = st.text_area("Comentario supervisor")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Aprobar", use_container_width=True):
+        aprobar_disabled = faltan_fotos
+        if st.button("Aprobar", use_container_width=True, disabled=aprobar_disabled):
             try:
                 result = api_validate_measurement(
                     sku=str(fila["sku"]),
