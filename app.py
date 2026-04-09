@@ -1,4 +1,4 @@
-import json
+import base64
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -10,11 +10,10 @@ st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wi
 # =========================================================
 # CONFIG
 # =========================================================
-# En Streamlit Cloud, guarda esto en secrets.toml como:
-# APPS_SCRIPT_URL = "APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzgW62wqP7-RdDGH5Gd6YJ0Y7r636pLq9Lh1tcfZZzXclhKaEozA2Yq6xDiSKYl2amckw/exec""
 APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
+# Si quieres probar rápido, puedes usar esto temporalmente:
+# APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzgW62wqP7-RdDGH5Gd6YJ0Y7r636pLq9Lh1tcfZZzXclhKaEozA2Yq6xDiSKYl2amckw/exec"
 
-ESTADOS_PDA = ["pendiente_medicion", "requiere_nueva_evidencia"]
 PRIORIDADES = ["alta", "media", "baja"]
 
 
@@ -25,7 +24,7 @@ def api_post(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not APPS_SCRIPT_URL:
         raise RuntimeError("Falta APPS_SCRIPT_URL en st.secrets")
 
-    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=60)
+    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=120)
     response.raise_for_status()
     data = response.json()
 
@@ -95,7 +94,14 @@ def api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool,
     )
 
 
-def api_update_status(sku: str, mlc: str, nuevo_estado: str, usuario: str, comentario: str = "", ticket_ejecutivo: str = "") -> Dict[str, Any]:
+def api_update_status(
+    sku: str,
+    mlc: str,
+    nuevo_estado: str,
+    usuario: str,
+    comentario: str = "",
+    ticket_ejecutivo: str = "",
+) -> Dict[str, Any]:
     return api_post(
         {
             "action": "update_status",
@@ -105,6 +111,31 @@ def api_update_status(sku: str, mlc: str, nuevo_estado: str, usuario: str, comen
             "usuario": usuario,
             "comentario": comentario,
             "ticket_ejecutivo": ticket_ejecutivo,
+        }
+    )
+
+
+def api_upload_photo(
+    sku: str,
+    mlc: str,
+    tipo: str,
+    uploaded_file,
+    cargado_por: str,
+    medicion_id: str = "",
+) -> Dict[str, Any]:
+    file_bytes = uploaded_file.getvalue()
+    file_base64 = base64.b64encode(file_bytes).decode("utf-8")
+
+    return api_post(
+        {
+            "action": "upload_photo",
+            "sku": sku,
+            "mlc": mlc,
+            "tipo": tipo,
+            "file_base64": file_base64,
+            "mime_type": uploaded_file.type or "image/jpeg",
+            "cargado_por": cargado_por,
+            "medicion_id": medicion_id,
         }
     )
 
@@ -138,11 +169,20 @@ def show_kpi_row(df: pd.DataFrame):
     with c1:
         st.metric("Total", len(df))
     with c2:
-        st.metric("Pendiente medición", int((df.get("estado_actual", pd.Series(dtype=str)) == "pendiente_medicion").sum()) if not df.empty else 0)
+        st.metric(
+            "Pendiente medición",
+            int((df.get("estado_actual", pd.Series(dtype=str)) == "pendiente_medicion").sum()) if not df.empty else 0,
+        )
     with c3:
-        st.metric("Pendiente validación", int((df.get("estado_actual", pd.Series(dtype=str)) == "medido_pendiente_validacion").sum()) if not df.empty else 0)
+        st.metric(
+            "Pendiente validación",
+            int((df.get("estado_actual", pd.Series(dtype=str)) == "medido_pendiente_validacion").sum()) if not df.empty else 0,
+        )
     with c4:
-        st.metric("Resueltos", int((df.get("estado_actual", pd.Series(dtype=str)) == "resuelto").sum()) if not df.empty else 0)
+        st.metric(
+            "Resueltos",
+            int((df.get("estado_actual", pd.Series(dtype=str)) == "resuelto").sum()) if not df.empty else 0,
+        )
 
 
 # =========================================================
@@ -192,6 +232,7 @@ if modo == "Administrador":
         operador_filter = st.multiselect("Operador asignado", operador_vals, default=operador_vals)
 
     df_filtrado = df.copy()
+
     if texto:
         mask = (
             df_filtrado["sku"].astype(str).str.contains(texto, case=False, na=False)
@@ -218,7 +259,13 @@ if modo == "Administrador":
         st.write("")
         asignar_btn = st.button("Asignar seleccionados", use_container_width=True)
 
-    cols_view = [c for c in ["sku", "mlc", "titulo", "categoria", "ventas", "visitas", "estado_actual", "prioridad", "operador_asignado"] if c in df_filtrado.columns]
+    cols_view = [
+        c for c in [
+            "sku", "mlc", "titulo", "categoria", "ventas", "visitas",
+            "estado_actual", "prioridad", "operador_asignado"
+        ] if c in df_filtrado.columns
+    ]
+
     edited = st.data_editor(
         df_filtrado[cols_view].assign(seleccionar=False),
         use_container_width=True,
@@ -249,14 +296,17 @@ if modo == "Administrador":
             options=df_filtrado.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1).tolist(),
         )
         sku_sel, mlc_sel, *_ = opcion.split(" | ")
-        fila = df_filtrado[(df_filtrado["sku"].astype(str) == sku_sel) & (df_filtrado["mlc"].astype(str) == mlc_sel)].iloc[0]
+        fila = df_filtrado[
+            (df_filtrado["sku"].astype(str) == sku_sel) &
+            (df_filtrado["mlc"].astype(str) == mlc_sel)
+        ].iloc[0]
 
         c1, c2 = st.columns(2)
         with c1:
             st.markdown(f"**SKU:** {fila['sku']}")
             st.markdown(f"**MLC:** {fila['mlc']}")
             st.markdown(f"**Título:** {fila['titulo']}")
-            st.markdown(badge_estado(str(fila.get("estado_actual", ""))), unsafe_allow_html=True)
+            st.markdown(badge_estado(str(fila.get('estado_actual', ''))), unsafe_allow_html=True)
         with c2:
             nuevo_estado = st.selectbox(
                 "Nuevo estado",
@@ -314,7 +364,10 @@ elif modo == "Operador":
         st.markdown(f"**Categoría:** {fila.get('categoria', '')}")
     with c2:
         st.markdown(f"**Peso ML:** {fila.get('peso_ml_kg', '')}")
-        st.markdown(f"**Dimensiones ML:** {fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')}")
+        st.markdown(
+            f"**Dimensiones ML:** "
+            f"{fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')}"
+        )
         st.markdown(badge_estado(str(fila.get("estado_actual", ""))), unsafe_allow_html=True)
 
     st.markdown("### Ingresar medidas reales")
@@ -326,12 +379,34 @@ elif modo == "Operador":
         with col2:
             profundidad = st.number_input("Profundidad real (cm)", min_value=0.0, step=0.1, format="%.2f")
             peso = st.number_input("Peso real (kg)", min_value=0.0, step=0.001, format="%.3f")
+
         observacion = st.text_area("Observación operador")
-        submitted = st.form_submit_button("Guardar medición", use_container_width=True)
+
+        st.markdown("### Fotos de respaldo")
+        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key="foto_alto")
+        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key="foto_ancho")
+        foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key="foto_profundidad")
+        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key="foto_peso")
+
+        submitted = st.form_submit_button("Guardar medición y subir fotos", use_container_width=True)
 
     if submitted:
+        faltantes = []
+        if foto_alto is None:
+            faltantes.append("alto")
+        if foto_ancho is None:
+            faltantes.append("ancho")
+        if foto_profundidad is None:
+            faltantes.append("profundidad")
+        if foto_peso is None:
+            faltantes.append("peso")
+
+        if faltantes:
+            st.error(f"Faltan fotos obligatorias: {', '.join(faltantes)}")
+            st.stop()
+
         try:
-            result = api_save_measurement(
+            result_med = api_save_measurement(
                 sku=str(fila["sku"]),
                 mlc=str(fila["mlc"]),
                 operador=operador,
@@ -341,10 +416,18 @@ elif modo == "Operador":
                 peso_real_kg=float(peso),
                 observacion_operador=observacion,
             )
-            st.success(f"Medición guardada. ID: {result.get('medicion_id')}")
+
+            medicion_id = result_med.get("medicion_id", "")
+
+            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "alto", foto_alto, operador, medicion_id)
+            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "ancho", foto_ancho, operador, medicion_id)
+            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "profundidad", foto_profundidad, operador, medicion_id)
+            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "peso", foto_peso, operador, medicion_id)
+
+            st.success(f"Medición guardada y fotos subidas. ID: {medicion_id}")
             st.rerun()
         except Exception as e:
-            st.error(f"No se pudo guardar la medición: {e}")
+            st.error(f"No se pudo guardar la medición/fotos: {e}")
 
 
 # =========================================================
@@ -384,6 +467,8 @@ else:
         columns=["Campo", "ML", "Real"],
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
+
+    st.info("La visualización de fotos del supervisor será el siguiente bloque, una vez que confirmes que la subida a Drive funciona bien.")
 
     comentario = st.text_area("Comentario supervisor")
     c1, c2 = st.columns(2)
