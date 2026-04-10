@@ -1,5 +1,6 @@
 import base64
-from typing import Any, Dict, List
+from io import BytesIO
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -7,24 +8,27 @@ import streamlit as st
 
 st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wide")
 
-# =========================================================
-# CONFIG
-# =========================================================
 APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
-# Para prueba rápida:
-# APPS_SCRIPT_URL = "https://script.google.com/macros/s/TU_URL/exec"
-
 PRIORIDADES = ["alta", "media", "baja"]
+ESTADOS_ADMIN = [
+    "listo_para_actualizar_medidas",
+    "listo_para_ejecutivo",
+    "en_gestion_ejecutivo",
+    "resuelto",
+    "rechazado_ml",
+    "rechazado_ejecutivo",
+    "requiere_nueva_evidencia",
+]
 
 
 # =========================================================
 # API
 # =========================================================
-def api_post(payload: Dict[str, Any]) -> Dict[str, Any]:
+def api_post(payload: Dict[str, Any], timeout: int = 180) -> Dict[str, Any]:
     if not APPS_SCRIPT_URL:
         raise RuntimeError("Falta APPS_SCRIPT_URL en st.secrets")
 
-    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=120)
+    response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=timeout)
     response.raise_for_status()
     data = response.json()
 
@@ -34,9 +38,31 @@ def api_post(payload: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def api_get_all_products() -> pd.DataFrame:
-    data = api_post({"action": "get_all_products"})
+    data = api_post({"action": "get_all_products"}, timeout=180)
     return pd.DataFrame(data.get("data", []))
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def api_get_tasks_by_operator(operador: str) -> pd.DataFrame:
+    data = api_post({"action": "get_tasks_by_operator", "operador": operador}, timeout=120)
+    return pd.DataFrame(data.get("items", []))
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def api_get_pending_validation(limit: int = 200) -> pd.DataFrame:
+    data = api_post({"action": "get_pending_validation", "limit": limit}, timeout=120)
+    return pd.DataFrame(data.get("items", []))
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def api_get_case_detail(sku: str, mlc: str) -> Dict[str, Any]:
+    return api_post({"action": "get_case_detail", "sku": sku, "mlc": mlc}, timeout=180)
+
+
+def api_login_with_pin(usuario: str, pin: str) -> Dict[str, Any]:
+    return api_post({"action": "login_with_pin", "usuario": usuario, "pin": pin}, timeout=60)
 
 
 def api_assign_tasks(items: List[Dict[str, str]], operador: str, prioridad: str, usuario: str) -> Dict[str, Any]:
@@ -49,11 +75,6 @@ def api_assign_tasks(items: List[Dict[str, str]], operador: str, prioridad: str,
             "usuario": usuario,
         }
     )
-
-
-def api_get_tasks_by_operator(operador: str) -> pd.DataFrame:
-    data = api_post({"action": "get_tasks_by_operator", "operador": operador})
-    return pd.DataFrame(data.get("items", []))
 
 
 def api_save_measurement(
@@ -136,24 +157,40 @@ def api_upload_photo(
             "mime_type": uploaded_file.type or "image/jpeg",
             "cargado_por": cargado_por,
             "medicion_id": medicion_id,
-        }
+        },
+        timeout=240,
     )
 
 
-def api_get_evidencias(sku: str, mlc: str) -> pd.DataFrame:
-    data = api_post({
-        "action": "get_evidencias",
-        "sku": sku,
-        "mlc": mlc
-    })
-    return pd.DataFrame(data.get("data", []))
+def api_replace_base_import_ml_raw(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return api_post({"action": "replace_base_import_ml_raw", "rows": rows}, timeout=240)
+
+
+def api_process_import_ml_to_base(archivo_nombre: str, usuario: str) -> Dict[str, Any]:
+    return api_post(
+        {
+            "action": "process_import_ml_to_base",
+            "archivo_nombre": archivo_nombre,
+            "usuario": usuario,
+        },
+        timeout=240,
+    )
 
 
 # =========================================================
-# HELPERS UI
+# HELPERS
 # =========================================================
+def clear_caches() -> None:
+    api_get_all_products.clear()
+    api_get_tasks_by_operator.clear()
+    api_get_pending_validation.clear()
+    api_get_case_detail.clear()
+
+
+
 def safe_df(df: pd.DataFrame) -> pd.DataFrame:
-    return df if not df.empty else pd.DataFrame()
+    return df if isinstance(df, pd.DataFrame) and not df.empty else pd.DataFrame()
+
 
 
 def badge_estado(estado: str) -> str:
@@ -170,10 +207,14 @@ def badge_estado(estado: str) -> str:
         "rechazado_ejecutivo": "#b91c1c",
     }
     color = color_map.get(str(estado), "#6b7280")
-    return f"<span style='background:{color};color:white;padding:4px 8px;border-radius:999px;font-size:12px'>{estado}</span>"
+    return (
+        f"<span style='background:{color};color:white;padding:4px 8px;"
+        f"border-radius:999px;font-size:12px'>{estado}</span>"
+    )
 
 
-def show_kpi_row(df: pd.DataFrame):
+
+def show_kpi_row(df: pd.DataFrame) -> None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric("Total", len(df))
@@ -185,7 +226,9 @@ def show_kpi_row(df: pd.DataFrame):
     with c3:
         st.metric(
             "Pendiente validación",
-            int((df.get("estado_actual", pd.Series(dtype=str)) == "medido_pendiente_validacion").sum()) if not df.empty else 0,
+            int((df.get("estado_actual", pd.Series(dtype=str)) == "medido_pendiente_validacion").sum())
+            if not df.empty
+            else 0,
         )
     with c4:
         st.metric(
@@ -194,63 +237,191 @@ def show_kpi_row(df: pd.DataFrame):
         )
 
 
-# =========================================================
-# SIDEBAR
-# =========================================================
-st.sidebar.title("Control Medidas ML")
-modo = st.sidebar.radio("Módulo", ["Administrador", "Operador", "Supervisor"])
-usuario_actual = st.sidebar.text_input("Usuario actual", value="admin_demo")
-recargar = st.sidebar.button("Recargar datos")
 
-if recargar:
-    st.rerun()
+def normalize_excel_value(value: Any) -> Any:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    return value
 
 
+
+def load_excel_as_rows(uploaded_file) -> List[Dict[str, Any]]:
+    df = pd.read_excel(uploaded_file)
+
+    if "SKU" in df.columns:
+        df["SKU"] = df["SKU"].apply(lambda x: "" if pd.isna(x) else str(x).replace(".0", "").strip())
+
+    rows: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        obj = {col: normalize_excel_value(row[col]) for col in df.columns}
+        rows.append(obj)
+    return rows
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_image_bytes(url: str) -> Optional[bytes]:
+    if not url:
+        return None
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    return response.content
+
+
+
+def render_evidence_gallery(evidencias_df: pd.DataFrame) -> bool:
+    orden = ["alto", "ancho", "profundidad", "peso"]
+    faltan_fotos = False
+
+    if evidencias_df.empty:
+        st.warning("No hay fotos disponibles")
+        return True
+
+    work = evidencias_df.copy()
+    if "fecha_carga" in work.columns:
+        work = work.sort_values("fecha_carga")
+    work = work.drop_duplicates(subset=["tipo_foto"], keep="last")
+    map_evidencias = {str(r["tipo_foto"]).lower(): r for _, r in work.iterrows()}
+
+    faltan_requeridas = [t for t in orden if t not in map_evidencias]
+    faltan_fotos = len(faltan_requeridas) > 0
+
+    if faltan_fotos:
+        st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
+
+    cols = st.columns(4)
+    for i, tipo in enumerate(orden):
+        with cols[i]:
+            st.markdown(f"**{tipo.upper()}**")
+            if tipo not in map_evidencias:
+                st.warning("Falta foto")
+                continue
+
+            row_evi = map_evidencias[tipo]
+            try:
+                image_bytes = fetch_image_bytes(str(row_evi.get("drive_link", "")))
+                if image_bytes:
+                    st.image(image_bytes, use_container_width=True)
+                else:
+                    st.warning("No se pudo mostrar imagen")
+            except Exception:
+                st.warning("No se pudo mostrar imagen")
+
+    return faltan_fotos
+
+
+
+def require_role(allowed_roles: List[str]) -> Dict[str, Any]:
+    user = st.session_state.get("auth_user")
+    if not user:
+        st.error("Sesión no iniciada")
+        st.stop()
+    if user.get("rol") not in allowed_roles:
+        st.error("No tienes permisos para este módulo")
+        st.stop()
+    return user
+
+
 # =========================================================
-# ADMINISTRADOR
+# LOGIN
 # =========================================================
-if modo == "Administrador":
+def render_login() -> None:
+    col1, col2, col3 = st.columns([1, 1.1, 1])
+    with col2:
+        st.title("Control Medidas ML")
+        st.caption("Ingreso con PIN por rol")
+
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            pin = st.text_input("PIN", type="password")
+            submit = st.form_submit_button("Ingresar", use_container_width=True)
+
+        if submit:
+            try:
+                result = api_login_with_pin(usuario.strip(), pin.strip())
+                st.session_state.auth_user = result.get("user", {})
+                clear_caches()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo iniciar sesión: {exc}")
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+def render_import_section(usuario_actual: str) -> None:
+    st.subheader("Importar publicaciones Mercado Libre")
+    uploaded_file = st.file_uploader("Sube Excel real de publicaciones ML", type=["xlsx"], key="excel_import_ml")
+
+    if uploaded_file is not None:
+        st.info(f"Archivo listo: {uploaded_file.name}")
+        if st.button("Procesar importación", use_container_width=True, key="btn_import_ml"):
+            try:
+                rows = load_excel_as_rows(uploaded_file)
+                with st.spinner("Cargando staging..."):
+                    r1 = api_replace_base_import_ml_raw(rows)
+                with st.spinner("Aplicando UPSERT..."):
+                    r2 = api_process_import_ml_to_base(uploaded_file.name, usuario_actual)
+
+                clear_caches()
+                st.success(
+                    "Importación OK | "
+                    f"raw: {r1.get('inserted', 0)} | "
+                    f"actualizados: {r2.get('updated', 0)} | "
+                    f"nuevos: {r2.get('inserted', 0)} | "
+                    f"sin cambios: {r2.get('unchanged', 0)} | "
+                    f"omitidos: {r2.get('skipped', 0)}"
+                )
+            except Exception as exc:
+                st.error(f"Error importando: {exc}")
+
+
+
+def render_admin() -> None:
+    user = require_role(["admin"])
+    usuario_actual = str(user.get("usuario_id", "admin"))
+
     st.title("Panel Administrador")
+    render_import_section(usuario_actual)
 
     try:
-        df = api_get_all_products()
-    except Exception as e:
-        st.error(f"No se pudo leer la API: {e}")
+        df = safe_df(api_get_all_products())
+    except Exception as exc:
+        st.error(f"No se pudo leer la API: {exc}")
         st.stop()
 
-    df = safe_df(df)
     show_kpi_row(df)
 
     if df.empty:
         st.warning("No hay productos en base_productos_ml")
-        st.stop()
+        return
 
     st.subheader("Filtros")
     f1, f2, f3, f4 = st.columns(4)
-
     with f1:
         texto = st.text_input("Buscar SKU / MLC / título")
     with f2:
-        estados = sorted([x for x in df["estado_actual"].dropna().astype(str).unique().tolist() if x])
+        estados = sorted([x for x in df.get("estado_actual", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x])
         estados_sel = st.multiselect("Estado", estados, default=estados)
     with f3:
-        prioridad_vals = sorted([x for x in df["prioridad"].dropna().astype(str).unique().tolist() if x])
+        prioridad_vals = sorted([x for x in df.get("prioridad", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x])
         prioridad_sel = st.multiselect("Prioridad", prioridad_vals, default=prioridad_vals)
     with f4:
-        operador_vals = sorted([x for x in df["operador_asignado"].dropna().astype(str).unique().tolist() if x])
+        operador_vals = sorted([x for x in df.get("operador_asignado", pd.Series(dtype=str)).dropna().astype(str).unique().tolist() if x])
         operador_filter = st.multiselect("Operador asignado", operador_vals, default=operador_vals)
 
     df_filtrado = df.copy()
-
     if texto:
+        titulo_col = df_filtrado["titulo"] if "titulo" in df_filtrado.columns else pd.Series([""] * len(df_filtrado))
         mask = (
             df_filtrado["sku"].astype(str).str.contains(texto, case=False, na=False)
             | df_filtrado["mlc"].astype(str).str.contains(texto, case=False, na=False)
-            | df_filtrado["titulo"].astype(str).str.contains(texto, case=False, na=False)
+            | titulo_col.astype(str).str.contains(texto, case=False, na=False)
         )
         df_filtrado = df_filtrado[mask]
 
-    if estados_sel:
+    if estados_sel and "estado_actual" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["estado_actual"].astype(str).isin(estados_sel)]
     if prioridad_sel and "prioridad" in df_filtrado.columns:
         df_filtrado = df_filtrado[df_filtrado["prioridad"].astype(str).isin(prioridad_sel)]
@@ -269,20 +440,28 @@ if modo == "Administrador":
         asignar_btn = st.button("Asignar seleccionados", use_container_width=True)
 
     cols_view = [
-        c for c in [
-            "sku", "mlc", "titulo", "categoria", "ventas", "visitas",
-            "estado_actual", "prioridad", "operador_asignado"
-        ] if c in df_filtrado.columns
+        c
+        for c in [
+            "sku",
+            "mlc",
+            "titulo",
+            "categoria",
+            "ventas",
+            "visitas",
+            "estado_actual",
+            "prioridad",
+            "operador_asignado",
+        ]
+        if c in df_filtrado.columns
     ]
 
     edited = st.data_editor(
         df_filtrado[cols_view].assign(seleccionar=False),
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)
-        },
-        disabled=[c for c in cols_view],
+        column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+        disabled=cols_view,
+        key="admin_data_editor",
     )
 
     if asignar_btn:
@@ -290,77 +469,67 @@ if modo == "Administrador":
         if seleccionados.empty:
             st.warning("No seleccionaste productos")
         else:
-            items = seleccionados[["sku", "mlc"]].to_dict(orient="records")
             try:
+                items = seleccionados[["sku", "mlc"]].to_dict(orient="records")
                 result = api_assign_tasks(items, operador_destino, prioridad_destino, usuario_actual)
+                clear_caches()
                 st.success(f"Tareas asignadas: {result.get('assigned', 0)}")
                 st.rerun()
-            except Exception as e:
-                st.error(f"No se pudo asignar: {e}")
+            except Exception as exc:
+                st.error(f"No se pudo asignar: {exc}")
 
     st.subheader("Gestión rápida de estado")
-    if not df_filtrado.empty:
-        opcion = st.selectbox(
-            "Selecciona un caso",
-            options=df_filtrado.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1).tolist(),
-        )
-        sku_sel, mlc_sel, *_ = opcion.split(" | ")
-        fila = df_filtrado[
-            (df_filtrado["sku"].astype(str) == sku_sel) &
-            (df_filtrado["mlc"].astype(str) == mlc_sel)
-        ].iloc[0]
+    if df_filtrado.empty:
+        st.info("No hay casos con los filtros aplicados")
+        return
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"**SKU:** {fila['sku']}")
-            st.markdown(f"**MLC:** {fila['mlc']}")
-            st.markdown(f"**Título:** {fila['titulo']}")
-            st.markdown(badge_estado(str(fila.get('estado_actual', ''))), unsafe_allow_html=True)
-        with c2:
-            nuevo_estado = st.selectbox(
-                "Nuevo estado",
-                [
-                    "listo_para_actualizar_medidas",
-                    "listo_para_ejecutivo",
-                    "en_gestion_ejecutivo",
-                    "resuelto",
-                    "rechazado_ml",
-                    "rechazado_ejecutivo",
-                    "requiere_nueva_evidencia",
-                ],
-            )
-            ticket = st.text_input("Ticket ejecutivo", value=str(fila.get("ticket_ejecutivo", "")))
-            comentario = st.text_area("Comentario admin", value="")
-            if st.button("Actualizar estado", use_container_width=True):
-                try:
-                    result = api_update_status(sku_sel, mlc_sel, nuevo_estado, usuario_actual, comentario, ticket)
-                    st.success(f"Estado actualizado a {result.get('estado_nuevo')}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"No se pudo actualizar estado: {e}")
+    opciones = df_filtrado.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r.get('titulo', '')}", axis=1).tolist()
+    opcion = st.selectbox("Selecciona un caso", options=opciones)
+    sku_sel, mlc_sel, *_ = opcion.split(" | ")
+    fila = df_filtrado[(df_filtrado["sku"].astype(str) == sku_sel) & (df_filtrado["mlc"].astype(str) == mlc_sel)].iloc[0]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"**SKU:** {fila['sku']}")
+        st.markdown(f"**MLC:** {fila['mlc']}")
+        st.markdown(f"**Título:** {fila.get('titulo', '')}")
+        st.markdown(badge_estado(str(fila.get('estado_actual', ''))), unsafe_allow_html=True)
+    with c2:
+        nuevo_estado = st.selectbox("Nuevo estado", ESTADOS_ADMIN)
+        ticket = st.text_input("Ticket ejecutivo", value=str(fila.get("ticket_ejecutivo", "")))
+        comentario = st.text_area("Comentario admin", value="")
+        if st.button("Actualizar estado", use_container_width=True):
+            try:
+                result = api_update_status(sku_sel, mlc_sel, nuevo_estado, usuario_actual, comentario, ticket)
+                clear_caches()
+                st.success(f"Estado actualizado a {result.get('estado_nuevo')}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo actualizar estado: {exc}")
 
 
 # =========================================================
 # OPERADOR
 # =========================================================
-elif modo == "Operador":
+def render_operator() -> None:
+    user = require_role(["operador"])
+    operador = str(user.get("operador_codigo") or user.get("usuario_id") or "")
+
     st.title("Módulo Operador PDA")
-    operador = st.text_input("Operador", value=usuario_actual)
+    st.caption(f"Operador autenticado: {operador}")
 
     try:
-        tareas = api_get_tasks_by_operator(operador)
-    except Exception as e:
-        st.error(f"No se pudo cargar tareas: {e}")
+        tareas = safe_df(api_get_tasks_by_operator(operador))
+    except Exception as exc:
+        st.error(f"No se pudo cargar tareas: {exc}")
         st.stop()
 
-    tareas = safe_df(tareas)
     st.metric("Mis tareas", len(tareas))
-
     if tareas.empty:
         st.info("No tienes tareas pendientes")
-        st.stop()
+        return
 
-    tareas["label"] = tareas.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
+    tareas["label"] = tareas.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r.get('titulo', '')}", axis=1)
     selected_label = st.selectbox("Selecciona producto", tareas["label"].tolist())
     fila = tareas[tareas["label"] == selected_label].iloc[0]
 
@@ -369,33 +538,37 @@ elif modo == "Operador":
     with c1:
         st.markdown(f"**SKU:** {fila['sku']}")
         st.markdown(f"**MLC:** {fila['mlc']}")
-        st.markdown(f"**Título:** {fila['titulo']}")
+        st.markdown(f"**Título:** {fila.get('titulo', '')}")
         st.markdown(f"**Categoría:** {fila.get('categoria', '')}")
     with c2:
         st.markdown(f"**Peso ML:** {fila.get('peso_ml_kg', '')}")
         st.markdown(
-            f"**Dimensiones ML:** "
-            f"{fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')}"
+            f"**Dimensiones ML:** {fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')}"
         )
         st.markdown(badge_estado(str(fila.get("estado_actual", ""))), unsafe_allow_html=True)
 
     st.markdown("### Ingresar medidas reales")
-    with st.form("form_medicion"):
+    form_key = f"form_medicion_{fila['sku']}_{fila['mlc']}"
+    with st.form(form_key):
         col1, col2 = st.columns(2)
         with col1:
-            alto = st.number_input("Alto real (cm)", min_value=0.0, step=0.1, format="%.2f")
-            ancho = st.number_input("Ancho real (cm)", min_value=0.0, step=0.1, format="%.2f")
+            alto = st.number_input("Alto real (cm)", min_value=0.0, step=0.1, format="%.2f", key=f"alto_{fila['sku']}_{fila['mlc']}")
+            ancho = st.number_input("Ancho real (cm)", min_value=0.0, step=0.1, format="%.2f", key=f"ancho_{fila['sku']}_{fila['mlc']}")
         with col2:
-            profundidad = st.number_input("Profundidad real (cm)", min_value=0.0, step=0.1, format="%.2f")
-            peso = st.number_input("Peso real (kg)", min_value=0.0, step=0.001, format="%.3f")
+            profundidad = st.number_input(
+                "Profundidad real (cm)", min_value=0.0, step=0.1, format="%.2f", key=f"prof_{fila['sku']}_{fila['mlc']}"
+            )
+            peso = st.number_input("Peso real (kg)", min_value=0.0, step=0.001, format="%.3f", key=f"peso_{fila['sku']}_{fila['mlc']}")
 
-        observacion = st.text_area("Observación operador")
+        observacion = st.text_area("Observación operador", key=f"obs_{fila['sku']}_{fila['mlc']}")
 
         st.markdown("### Fotos de respaldo")
-        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key="foto_alto")
-        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key="foto_ancho")
-        foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key="foto_profundidad")
-        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key="foto_peso")
+        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key=f"foto_alto_{fila['sku']}_{fila['mlc']}")
+        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key=f"foto_ancho_{fila['sku']}_{fila['mlc']}")
+        foto_profundidad = st.file_uploader(
+            "Foto profundidad", type=["jpg", "jpeg", "png"], key=f"foto_prof_{fila['sku']}_{fila['mlc']}"
+        )
+        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key=f"foto_peso_{fila['sku']}_{fila['mlc']}")
 
         submitted = st.form_submit_button("Guardar medición y subir fotos", use_container_width=True)
 
@@ -412,7 +585,7 @@ elif modo == "Operador":
 
         if faltantes:
             st.error(f"Faltan fotos obligatorias: {', '.join(faltantes)}")
-            st.stop()
+            return
 
         try:
             result_med = api_save_measurement(
@@ -425,173 +598,201 @@ elif modo == "Operador":
                 peso_real_kg=float(peso),
                 observacion_operador=observacion,
             )
-
             medicion_id = result_med.get("medicion_id", "")
 
-            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "alto", foto_alto, operador, medicion_id)
-            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "ancho", foto_ancho, operador, medicion_id)
-            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "profundidad", foto_profundidad, operador, medicion_id)
-            api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "peso", foto_peso, operador, medicion_id)
+            with st.spinner("Subiendo fotos..."):
+                api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "alto", foto_alto, operador, medicion_id)
+                api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "ancho", foto_ancho, operador, medicion_id)
+                api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "profundidad", foto_profundidad, operador, medicion_id)
+                api_upload_photo(str(fila["sku"]), str(fila["mlc"]), "peso", foto_peso, operador, medicion_id)
 
+            clear_caches()
             st.success(f"Medición guardada y fotos subidas. ID: {medicion_id}")
             st.rerun()
-        except Exception as e:
-            st.error(f"No se pudo guardar la medición/fotos: {e}")
+        except Exception as exc:
+            st.error(f"No se pudo guardar la medición/fotos: {exc}")
 
 
 # =========================================================
 # SUPERVISOR
 # =========================================================
-else:
+def render_supervisor() -> None:
+    user = require_role(["supervisor", "admin"])
+    supervisor = str(user.get("usuario_id") or user.get("nombre") or "supervisor")
+
     st.title("Módulo Supervisor")
-    supervisor = st.text_input("Supervisor", value=usuario_actual)
 
     try:
-        df = api_get_all_products()
-    except Exception as e:
-        st.error(f"No se pudo cargar la base: {e}")
+        pendientes = safe_df(api_get_pending_validation())
+    except Exception as exc:
+        st.error(f"No se pudo cargar pendientes: {exc}")
         st.stop()
-
-    df = safe_df(df)
-    pendientes = df[df["estado_actual"].astype(str) == "medido_pendiente_validacion"].copy() if not df.empty else pd.DataFrame()
 
     st.metric("Pendientes validación", len(pendientes))
-
     if pendientes.empty:
         st.info("No hay mediciones pendientes de validación")
-        st.stop()
+        return
 
-    pendientes["label"] = pendientes.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
+    pendientes["label"] = pendientes.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r.get('titulo', '')}", axis=1)
     selected_label = st.selectbox("Caso a revisar", pendientes["label"].tolist())
     fila = pendientes[pendientes["label"] == selected_label].iloc[0]
+
+    try:
+        case_detail = api_get_case_detail(str(fila["sku"]), str(fila["mlc"]))
+    except Exception as exc:
+        st.error(f"No se pudo cargar detalle del caso: {exc}")
+        st.stop()
+
+    product = case_detail.get("product", {}) or {}
+    evidencias = safe_df(pd.DataFrame(case_detail.get("evidencias", [])))
+    mediciones = safe_df(pd.DataFrame(case_detail.get("mediciones", [])))
+    historial = safe_df(pd.DataFrame(case_detail.get("historial", [])))
 
     st.markdown("### Comparativo ML vs Real")
     comp = pd.DataFrame(
         [
-            ["Alto", fila.get("alto_ml_cm", ""), fila.get("alto_real_cm", "")],
-            ["Ancho", fila.get("ancho_ml_cm", ""), fila.get("ancho_real_cm", "")],
-            ["Profundidad", fila.get("profundidad_ml_cm", ""), fila.get("profundidad_real_cm", "")],
-            ["Peso", fila.get("peso_ml_kg", ""), fila.get("peso_real_kg", "")],
+            ["Alto", product.get("alto_ml_cm", ""), product.get("alto_real_cm", "")],
+            ["Ancho", product.get("ancho_ml_cm", ""), product.get("ancho_real_cm", "")],
+            ["Profundidad", product.get("profundidad_ml_cm", ""), product.get("profundidad_real_cm", "")],
+            ["Peso", product.get("peso_ml_kg", ""), product.get("peso_real_kg", "")],
         ],
         columns=["Campo", "ML", "Real"],
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
 
-    st.markdown("")
-    try:
-        evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
-    except Exception as e:
-        st.error(f"No se pudieron cargar evidencias: {e}")
-        evidencias = pd.DataFrame()
+    st.markdown("### Evidencia fotográfica")
+    faltan_fotos = render_evidence_gallery(evidencias)
 
-    if evidencias.empty:
-        st.warning("No hay fotos disponibles")
-        faltan_fotos = True
-    else:
-        orden = ["alto", "ancho", "profundidad", "peso"]
-        evidencias["tipo_foto"] = evidencias["tipo_foto"].astype(str)
-        evidencias = evidencias.sort_values(
-            by="tipo_foto",
-            key=lambda col: col.map({k: i for i, k in enumerate(orden)}).fillna(99)
-        )
+    if not mediciones.empty:
+        st.markdown("### Mediciones registradas")
+        cols = [
+            c
+            for c in [
+                "fecha_medicion",
+                "operador",
+                "alto_real_cm",
+                "ancho_real_cm",
+                "profundidad_real_cm",
+                "peso_real_kg",
+                "observacion_operador",
+            ]
+            if c in mediciones.columns
+        ]
+        st.dataframe(mediciones[cols].sort_values(by=cols[0], ascending=False), use_container_width=True, hide_index=True)
 
-        tipos = set(evidencias["tipo_foto"].tolist())
-        faltan_requeridas = [t for t in orden if t not in tipos]
-        faltan_fotos = len(faltan_requeridas) > 0
+    if not historial.empty:
+        st.markdown("### Historial del caso")
+        cols = [
+            c for c in ["fecha_cambio", "estado_anterior", "estado_nuevo", "usuario", "comentario"] if c in historial.columns
+        ]
+        st.dataframe(historial[cols].sort_values(by=cols[0], ascending=False), use_container_width=True, hide_index=True)
 
-        if faltan_fotos:
-            st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
+    comentario = st.text_area("Comentario supervisor", key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}")
+    c1, c2 = st.columns(2)
 
-st.markdown("### Evidencia fotográfica")
-
-try:
-    evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
-except Exception as e:
-    st.error(f"No se pudieron cargar evidencias: {e}")
-    evidencias = pd.DataFrame()
-
-faltan_fotos = False
-
-if evidencias.empty:
-    st.warning("No hay fotos disponibles")
-    faltan_fotos = True
-else:
-    # dejar solo la última evidencia por tipo_foto
-    evidencias = evidencias.sort_values("fecha_carga").drop_duplicates(
-        subset=["tipo_foto"], keep="last"
-    )
-
-    orden = ["alto", "ancho", "profundidad", "peso"]
-    map_evidencias = {str(r["tipo_foto"]).lower(): r for _, r in evidencias.iterrows()}
-
-    faltan_requeridas = [t for t in orden if t not in map_evidencias]
-    faltan_fotos = len(faltan_requeridas) > 0
-
-    if faltan_fotos:
-        st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
-
-    cols = st.columns(4)
-
-    for i, tipo in enumerate(orden):
-        with cols[i]:
-            st.markdown(f"**{tipo.upper()}**")
-
-            if tipo not in map_evidencias:
-                st.warning("Falta foto")
-                continue
-
-            row_evi = map_evidencias[tipo]
-
+    with c1:
+        if st.button(
+            "Aprobar",
+            use_container_width=True,
+            disabled=faltan_fotos,
+            key=f"btn_aprobar_supervisor_{fila['sku']}_{fila['mlc']}",
+        ):
             try:
-                import requests
-                response = requests.get(row_evi["drive_link"], timeout=30)
-                response.raise_for_status()
-                st.image(response.content, use_container_width=True)
-            except Exception:
-                st.warning("No se pudo mostrar imagen")
+                result = api_validate_measurement(
+                    sku=str(fila["sku"]),
+                    mlc=str(fila["mlc"]),
+                    supervisor=supervisor,
+                    aprobar=True,
+                    comentario=comentario,
+                )
+                clear_caches()
+                st.success(f"Estado: {result.get('estado_nuevo')}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo aprobar: {exc}")
 
-comentario = st.text_area(
-    "Comentario supervisor",
-    key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}"
-)
+    with c2:
+        if st.button(
+            "Solicitar nueva evidencia",
+            use_container_width=True,
+            key=f"btn_nueva_evidencia_supervisor_{fila['sku']}_{fila['mlc']}",
+        ):
+            try:
+                result = api_validate_measurement(
+                    sku=str(fila["sku"]),
+                    mlc=str(fila["mlc"]),
+                    supervisor=supervisor,
+                    aprobar=False,
+                    comentario=comentario or "Se solicita nueva evidencia",
+                )
+                clear_caches()
+                st.warning(f"Estado: {result.get('estado_nuevo')}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo devolver: {exc}")
 
-c1, c2 = st.columns(2)
 
-with c1:
-    if st.button(
-        "Aprobar",
-        use_container_width=True,
-        disabled=faltan_fotos,
-        key=f"btn_aprobar_supervisor_{fila['sku']}_{fila['mlc']}"
-    ):
-        try:
-            result = api_validate_measurement(
-                sku=str(fila["sku"]),
-                mlc=str(fila["mlc"]),
-                supervisor=supervisor,
-                aprobar=True,
-                comentario=comentario,
-            )
-            st.success(f"Estado: {result.get('estado_nuevo')}")
-            st.rerun()
-        except Exception as e:
-            st.error(f"No se pudo aprobar: {e}")
+# =========================================================
+# APP SHELL
+# =========================================================
+def init_session() -> None:
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = None
 
-with c2:
-    if st.button(
-        "Solicitar nueva evidencia",
-        use_container_width=True,
-        key=f"btn_nueva_evidencia_supervisor_{fila['sku']}_{fila['mlc']}"
-    ):
-        try:
-            result = api_validate_measurement(
-                sku=str(fila["sku"]),
-                mlc=str(fila["mlc"]),
-                supervisor=supervisor,
-                aprobar=False,
-                comentario=comentario or "Se solicita nueva evidencia",
-            )
-            st.warning(f"Estado: {result.get('estado_nuevo')}")
-            st.rerun()
-        except Exception as e:
-            st.error(f"No se pudo devolver: {e}")
+
+
+def render_sidebar() -> str:
+    st.sidebar.title("Control Medidas ML")
+    user = st.session_state.get("auth_user")
+
+    if not user:
+        st.sidebar.info("Sesión no iniciada")
+        return "login"
+
+    st.sidebar.success(f"{user.get('nombre', '')}")
+    st.sidebar.caption(f"Rol: {user.get('rol', '')}")
+    st.sidebar.caption(f"Usuario: {user.get('usuario_id', '')}")
+
+    role = str(user.get("rol", ""))
+    if role == "admin":
+        allowed = ["Administrador", "Supervisor"]
+    elif role == "supervisor":
+        allowed = ["Supervisor"]
+    elif role == "operador":
+        allowed = ["Operador"]
+    else:
+        allowed = []
+
+    modulo = st.sidebar.radio("Módulo", allowed)
+
+    if st.sidebar.button("Recargar datos", use_container_width=True):
+        clear_caches()
+        st.rerun()
+
+    if st.sidebar.button("Cerrar sesión", use_container_width=True):
+        st.session_state.auth_user = None
+        clear_caches()
+        st.rerun()
+
+    return modulo
+
+
+
+def main() -> None:
+    init_session()
+    modulo = render_sidebar()
+
+    if modulo == "login":
+        render_login()
+        return
+
+    if modulo == "Administrador":
+        render_admin()
+    elif modulo == "Operador":
+        render_operator()
+    else:
+        render_supervisor()
+
+
+if __name__ == "__main__":
+    main()
