@@ -726,7 +726,7 @@ if modo == "Administrador":
                 try:
                     result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
                     clear_caches()
-                    st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
+                    st.success(f"SKUs seleccionados: {result.get('skus', 0)} | Publicaciones afectadas: {result.get('assigned', 0)}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"No se pudo asignar: {e}")
@@ -763,7 +763,7 @@ elif modo == "Operador":
     try:
         tareas = api_get_tasks_by_operator_grouped_by_sku(nombre_operador.strip())
     except Exception as e:
-        st.error(f"No se pudo cargar tareas: {e}")
+        st.error(f"No se pudo cargar tareas del operador: {e}")
         st.stop()
 
     tareas = safe_df(tareas)
