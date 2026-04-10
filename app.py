@@ -502,7 +502,7 @@ else:
         if faltan_fotos:
             st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
 
-        cols = st.columns(4)
+cols = st.columns(4)
 for i, (_, row) in enumerate(evidencias.iterrows()):
     with cols[i % 4]:
         st.markdown(f"**{str(row['tipo_foto']).upper()}**")
@@ -513,7 +513,7 @@ for i, (_, row) in enumerate(evidencias.iterrows()):
         except:
             st.warning("No se pudo mostrar imagen")
 
-    comentario = st.text_area(
+comentario = st.text_area(
     "Comentario supervisor",
     key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}"
 )
