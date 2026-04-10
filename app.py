@@ -54,7 +54,7 @@ def api_get_admin_queue(
     query: str = "",
     estados: Optional[List[str]] = None,
     operador: str = "",
-    limit: int = 100000,
+    limit: int = 1000000,
 ) -> pd.DataFrame:
     data = api_post(
         {
@@ -70,14 +70,44 @@ def api_get_admin_queue(
 
 
 @st.cache_data(ttl=15, show_spinner=False)
+def api_get_admin_queue_grouped_by_sku(
+    query: str = "",
+    estados: Optional[List[str]] = None,
+    operador: str = "",
+) -> pd.DataFrame:
+    data = api_post(
+        {
+            "action": "get_admin_queue_grouped_by_sku",
+            "query": query,
+            "estados": estados or [],
+            "operador": operador,
+        },
+        timeout=120,
+    )
+    return pd.DataFrame(data.get("items", []))
+
+
+@st.cache_data(ttl=15, show_spinner=False)
 def api_get_tasks_by_operator(operador: str) -> pd.DataFrame:
     data = api_post({"action": "get_tasks_by_operator", "operador": operador}, timeout=120)
     return pd.DataFrame(data.get("items", []))
 
 
 @st.cache_data(ttl=15, show_spinner=False)
+def api_get_tasks_by_operator_grouped_by_sku(operador: str) -> pd.DataFrame:
+    data = api_post({"action": "get_tasks_by_operator_grouped_by_sku", "operador": operador}, timeout=120)
+    return pd.DataFrame(data.get("items", []))
+
+
+@st.cache_data(ttl=15, show_spinner=False)
 def api_get_pending_validation(limit: int = 200) -> pd.DataFrame:
     data = api_post({"action": "get_pending_validation", "limit": limit}, timeout=120)
+    return pd.DataFrame(data.get("items", []))
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def api_get_pending_validation_grouped_by_sku(limit: int = 200) -> pd.DataFrame:
+    data = api_post({"action": "get_pending_validation_grouped_by_sku", "limit": limit}, timeout=120)
     return pd.DataFrame(data.get("items", []))
 
 
@@ -95,9 +125,20 @@ def api_get_case_detail(sku: str, mlc: str) -> Dict[str, Any]:
     return api_post({"action": "get_case_detail", "sku": sku, "mlc": mlc}, timeout=120)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def api_get_case_detail_by_sku(sku: str) -> Dict[str, Any]:
+    return api_post({"action": "get_case_detail_by_sku", "sku": sku}, timeout=120)
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def api_get_evidencias(sku: str, mlc: str) -> pd.DataFrame:
     data = api_post({"action": "get_evidencias", "sku": sku, "mlc": mlc}, timeout=120)
+    return pd.DataFrame(data.get("data", []))
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def api_get_evidencias_by_sku(sku: str) -> pd.DataFrame:
+    data = api_post({"action": "get_evidencias_by_sku", "sku": sku}, timeout=120)
     return pd.DataFrame(data.get("data", []))
 
 
@@ -112,6 +153,17 @@ def api_assign_tasks(items: List[Dict[str, str]], operador: str, usuario: str) -
             "items": items,
             "operador": operador,
             "prioridad": "",
+            "usuario": usuario,
+        }
+    )
+
+
+def api_assign_tasks_grouped_by_sku(items: List[Dict[str, str]], operador: str, usuario: str) -> Dict[str, Any]:
+    return api_post(
+        {
+            "action": "assign_tasks_grouped_by_sku",
+            "items": items,
+            "operador": operador,
             "usuario": usuario,
         }
     )
@@ -176,12 +228,61 @@ def api_save_measurement_with_photos(
     )
 
 
+def api_save_measurement_with_photos_by_sku(
+    sku: str,
+    operador: str,
+    alto_real_cm: float,
+    ancho_real_cm: float,
+    profundidad_real_cm: float,
+    peso_real_kg: float,
+    observacion_operador: str,
+    foto_alto,
+    foto_ancho,
+    foto_profundidad,
+    foto_peso,
+) -> Dict[str, Any]:
+    def to_base64(uploaded_file) -> str:
+        return base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
+
+    return api_post(
+        {
+            "action": "save_measurement_with_photos_by_sku",
+            "sku": sku,
+            "operador": operador,
+            "alto_real_cm": alto_real_cm,
+            "ancho_real_cm": ancho_real_cm,
+            "profundidad_real_cm": profundidad_real_cm,
+            "peso_real_kg": peso_real_kg,
+            "observacion_operador": observacion_operador,
+            "photos": [
+                {"tipo": "alto", "file_base64": to_base64(foto_alto), "mime_type": foto_alto.type or "image/jpeg", "file_name": foto_alto.name},
+                {"tipo": "ancho", "file_base64": to_base64(foto_ancho), "mime_type": foto_ancho.type or "image/jpeg", "file_name": foto_ancho.name},
+                {"tipo": "profundidad", "file_base64": to_base64(foto_profundidad), "mime_type": foto_profundidad.type or "image/jpeg", "file_name": foto_profundidad.name},
+                {"tipo": "peso", "file_base64": to_base64(foto_peso), "mime_type": foto_peso.type or "image/jpeg", "file_name": foto_peso.name},
+            ],
+        },
+        timeout=240,
+    )
+
+
 def api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
     return api_post(
         {
             "action": "validate_measurement",
             "sku": sku,
             "mlc": mlc,
+            "supervisor": supervisor,
+            "aprobar": aprobar,
+            "comentario": comentario,
+        }
+    )
+
+
+def api_validate_measurement_by_sku(sku: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
+    return api_post(
+        {
+            "action": "validate_measurement_by_sku",
+            "sku": sku,
             "supervisor": supervisor,
             "aprobar": aprobar,
             "comentario": comentario,
@@ -216,11 +317,16 @@ def api_update_status(
 def clear_caches() -> None:
     api_get_dashboard_counts.clear()
     api_get_admin_queue.clear()
+    api_get_admin_queue_grouped_by_sku.clear()
     api_get_tasks_by_operator.clear()
+    api_get_tasks_by_operator_grouped_by_sku.clear()
     api_get_pending_validation.clear()
+    api_get_pending_validation_grouped_by_sku.clear()
     api_get_administrative_queue.clear()
     api_get_case_detail.clear()
+    api_get_case_detail_by_sku.clear()
     api_get_evidencias.clear()
+    api_get_evidencias_by_sku.clear()
 
 
 def safe_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -568,7 +674,12 @@ if modo == "Administrador":
         admin_filter_state["operador_filter"] = operador_filter.strip()
 
     try:
-        df_filtrado = api_get_admin_queue(
+        df_filtrado_pub = api_get_admin_queue(
+            query=admin_filter_state["texto"],
+            estados=admin_filter_state["estados_sel"],
+            operador=admin_filter_state["operador_filter"],
+        )
+        df_filtrado_sku = api_get_admin_queue_grouped_by_sku(
             query=admin_filter_state["texto"],
             estados=admin_filter_state["estados_sel"],
             operador=admin_filter_state["operador_filter"],
@@ -577,16 +688,17 @@ if modo == "Administrador":
         st.error(f"No se pudo cargar la bandeja administrativa: {e}")
         st.stop()
 
-    df_filtrado = safe_df(df_filtrado)
+    df_filtrado_pub = safe_df(df_filtrado_pub)
+    df_filtrado_sku = safe_df(df_filtrado_sku)
 
-    if df_filtrado.empty:
-        st.info("No hay productos para los filtros seleccionados")
+    if df_filtrado_sku.empty:
+        st.info("No hay SKUs para los filtros seleccionados")
         st.stop()
 
-    st.caption(f"Resultados encontrados: {len(df_filtrado)}")
+    st.caption(f"Resultados encontrados: {len(df_filtrado_sku)} SKUs | {len(df_filtrado_pub)} publicaciones")
 
     st.subheader("Reporte comparativo")
-    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado)
+    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
     st.download_button(
         "Descargar Excel comparativas",
         data=comparativas_bytes,
@@ -596,19 +708,19 @@ if modo == "Administrador":
         key="download_comparativas_admin",
     )
 
-    st.subheader("Asignación de tareas")
+    st.subheader("Asignación de tareas por SKU")
     with st.form("admin_assign_form"):
         operador_destino = st.text_input("Asignar a operador", value="")
-        cols_view = [c for c in ["sku", "mlc", "titulo", "ventas", "estado_actual", "operador_asignado"] if c in df_filtrado.columns]
+        cols_view = [c for c in ["sku", "titulo", "publicaciones_count", "estado_actual", "operador_asignado"] if c in df_filtrado_sku.columns]
         edited = st.data_editor(
-            df_filtrado[cols_view].assign(seleccionar=False),
+            df_filtrado_sku[cols_view].assign(seleccionar=False),
             use_container_width=True,
             hide_index=True,
             column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
             disabled=cols_view,
-            key="admin_editor_asignacion_fast",
+            key="admin_editor_asignacion_sku",
         )
-        asignar_btn = st.form_submit_button("Asignar seleccionados", use_container_width=True)
+        asignar_btn = st.form_submit_button("Asignar SKUs seleccionados", use_container_width=True)
 
     if asignar_btn:
         if not operador_destino.strip():
@@ -616,18 +728,16 @@ if modo == "Administrador":
         else:
             seleccionados = edited[edited["seleccionar"] == True]  # noqa: E712
             if seleccionados.empty:
-                st.warning("No seleccionaste productos")
+                st.warning("No seleccionaste SKUs")
             else:
-                items = seleccionados[["sku", "mlc"]].to_dict(orient="records")
+                items = seleccionados[["sku"]].to_dict(orient="records")
                 try:
-                    result = api_assign_tasks(items, operador_destino.strip(), usuario_actual)
+                    result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
                     clear_caches()
-                    st.success(f"Tareas asignadas: {result.get('assigned', 0)}")
+                    st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"No se pudo asignar: {e}")
-
-
 
 
 # =========================================================
@@ -647,28 +757,28 @@ elif modo == "Operador":
         st.stop()
 
     try:
-        tareas = api_get_tasks_by_operator(nombre_operador.strip())
+        tareas = api_get_tasks_by_operator_grouped_by_sku(nombre_operador.strip())
     except Exception as e:
         st.error(f"No se pudo cargar tareas: {e}")
         st.stop()
 
     tareas = safe_df(tareas)
-    st.metric("Mis tareas", len(tareas))
+    st.metric("Mis SKUs pendientes", len(tareas))
 
     if tareas.empty:
         st.info("No tienes tareas pendientes")
         st.stop()
 
-    tareas["label"] = tareas.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
-    selected_label = st.selectbox("Selecciona producto", tareas["label"].tolist())
+    tareas["label"] = tareas.apply(lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones", axis=1)
+    selected_label = st.selectbox("Selecciona SKU", tareas["label"].tolist())
     fila = tareas[tareas["label"] == selected_label].iloc[0]
 
     st.markdown("### Información actual")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown(f"**SKU:** {fila['sku']}")
-        st.markdown(f"**MLC:** {fila['mlc']}")
         st.markdown(f"**Título:** {fila['titulo']}")
+        st.markdown(f"**Publicaciones asociadas:** {fila.get('publicaciones_count', '')}")
         st.markdown(f"**Operador:** {nombre_operador.strip()}")
     with c2:
         st.markdown(f"**Peso ML:** {fila.get('peso_ml_kg', '')}")
@@ -693,7 +803,7 @@ elif modo == "Operador":
         foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key="foto_ancho_fast")
         foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key="foto_profundidad_fast")
         foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key="foto_peso_fast")
-        submitted = st.form_submit_button("Guardar medición y subir fotos", use_container_width=True)
+        submitted = st.form_submit_button("Guardar medición del SKU y subir fotos", use_container_width=True)
 
     if submitted:
         faltantes = []
@@ -711,9 +821,8 @@ elif modo == "Operador":
             st.stop()
 
         try:
-            result = api_save_measurement_with_photos(
+            result = api_save_measurement_with_photos_by_sku(
                 sku=str(fila["sku"]),
-                mlc=str(fila["mlc"]),
                 operador=nombre_operador.strip(),
                 alto_real_cm=float(alto),
                 ancho_real_cm=float(ancho),
@@ -726,7 +835,9 @@ elif modo == "Operador":
                 foto_peso=foto_peso,
             )
             clear_caches()
-            st.success(f"Medición guardada y fotos subidas. ID: {result.get('medicion_id', '')}")
+            st.success(
+                f"Medición SKU guardada. Publicaciones afectadas: {result.get('publicaciones_afectadas', 0)} | ID: {result.get('medicion_id', '')}"
+            )
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo guardar la medición/fotos: {e}")
@@ -739,26 +850,26 @@ elif modo == "Supervisor":
     st.title("Módulo Supervisor")
 
     try:
-        pendientes = api_get_pending_validation(limit=300)
+        pendientes = api_get_pending_validation_grouped_by_sku(limit=300)
     except Exception as e:
         st.error(f"No se pudo cargar la bandeja: {e}")
         st.stop()
 
     pendientes = safe_df(pendientes)
-    st.metric("Pendientes validación", len(pendientes))
+    st.metric("SKUs pendientes validación", len(pendientes))
 
     if pendientes.empty:
         st.info("No hay mediciones pendientes de validación")
         st.stop()
 
-    pendientes["label"] = pendientes.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
-    selected_label = st.selectbox("Caso a revisar", pendientes["label"].tolist())
+    pendientes["label"] = pendientes.apply(lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones", axis=1)
+    selected_label = st.selectbox("SKU a revisar", pendientes["label"].tolist())
     fila = pendientes[pendientes["label"] == selected_label].iloc[0]
 
     fallback_case = fila.to_dict()
     detail = {}
     try:
-        detail = api_get_case_detail(str(fila["sku"]), str(fila["mlc"]))
+        detail = api_get_case_detail_by_sku(str(fila["sku"]))
     except Exception:
         detail = {}
 
@@ -776,7 +887,7 @@ elif modo == "Supervisor":
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
 
-    evid_key = f"show_evid_supervisor_{fila['sku']}_{fila['mlc']}"
+    evid_key = f"show_evid_supervisor_{fila['sku']}"
     st.button(
         "Ver evidencias" if not st.session_state.get(evid_key, False) else "Ocultar evidencias",
         use_container_width=False,
@@ -787,37 +898,36 @@ elif modo == "Supervisor":
 
     if st.session_state.get(evid_key, False):
         try:
-            evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
+            evidencias = api_get_evidencias_by_sku(str(fila["sku"]))
         except Exception:
             evidencias = pd.DataFrame(detail.get("evidencias", []))
         render_evidencias(evidencias)
 
-    with st.form(f"supervisor_action_form_{fila['sku']}_{fila['mlc']}"):
-        comentario = st.text_area("Comentario supervisor", key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}")
+    with st.form(f"supervisor_action_form_{fila['sku']}"):
+        comentario = st.text_area("Comentario supervisor", key=f"comentario_supervisor_{fila['sku']}")
         c1, c2 = st.columns(2)
-        aprobar = c1.form_submit_button("Aprobar", use_container_width=True)
+        aprobar = c1.form_submit_button("Aprobar SKU", use_container_width=True)
         devolver = c2.form_submit_button("Solicitar nueva evidencia", use_container_width=True)
 
     if aprobar:
         try:
-            api_validate_measurement(str(fila["sku"]), str(fila["mlc"]), usuario_actual, True, comentario)
+            result = api_validate_measurement_by_sku(str(fila["sku"]), usuario_actual, True, comentario)
             clear_caches()
-            st.success("Caso aprobado")
+            st.success(f"SKU aprobado. Publicaciones afectadas: {result.get('affected', 0)}")
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo aprobar: {e}")
 
     if devolver:
         try:
-            api_validate_measurement(
+            result = api_validate_measurement_by_sku(
                 str(fila["sku"]),
-                str(fila["mlc"]),
                 usuario_actual,
                 False,
                 comentario or "Se solicita nueva evidencia",
             )
             clear_caches()
-            st.warning("Caso devuelto a medición")
+            st.warning(f"SKU devuelto a medición. Publicaciones afectadas: {result.get('affected', 0)}")
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo devolver: {e}")
