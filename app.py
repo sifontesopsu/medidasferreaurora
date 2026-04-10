@@ -700,7 +700,7 @@ if modo == "Administrador":
     st.subheader("Asignación de tareas por SKU")
     with st.form("admin_assign_form"):
         operador_destino = st.text_input("Asignar a operador", value="")
-        cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado.columns]
+        cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
         edited = st.data_editor(
             df_filtrado_sku[cols_view].assign(seleccionar=False),
             use_container_width=True,
