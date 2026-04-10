@@ -513,11 +513,20 @@ for i, (_, row) in enumerate(evidencias.iterrows()):
         except:
             st.warning("No se pudo mostrar imagen")
 
-    comentario = st.text_area("Comentario supervisor", key="comentario_supervisor")
+    comentario = st.text_area(
+    "Comentario supervisor",
+    key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}"
+)
+
 c1, c2 = st.columns(2)
 with c1:
     aprobar_disabled = faltan_fotos
-    if st.button("Aprobar", use_container_width=True, disabled=aprobar_disabled, key="btn_aprobar_supervisor"):
+    if st.button(
+        "Aprobar",
+        use_container_width=True,
+        disabled=aprobar_disabled,
+        key=f"btn_aprobar_supervisor_{fila['sku']}_{fila['mlc']}"
+    ):
         try:
             result = api_validate_measurement(
                 sku=str(fila["sku"]),
@@ -530,8 +539,13 @@ with c1:
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo aprobar: {e}")
+
 with c2:
-    if st.button("Solicitar nueva evidencia", use_container_width=True, key="btn_nueva_evidencia_supervisor"):
+    if st.button(
+        "Solicitar nueva evidencia",
+        use_container_width=True,
+        key=f"btn_nueva_evidencia_supervisor_{fila['sku']}_{fila['mlc']}"
+    ):
         try:
             result = api_validate_measurement(
                 sku=str(fila["sku"]),
