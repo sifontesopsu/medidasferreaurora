@@ -691,6 +691,9 @@ if modo == "Administrador":
     df_filtrado_pub = safe_df(df_filtrado_pub)
     df_filtrado_sku = safe_df(df_filtrado_sku)
 
+    if "ventas" not in df_filtrado_sku.columns:
+        df_filtrado_sku["ventas"] = df_filtrado_sku.get("ventas_total", "")
+
     if df_filtrado_sku.empty:
         st.info("No hay SKUs para los filtros seleccionados")
         st.stop()
