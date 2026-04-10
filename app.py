@@ -697,17 +697,6 @@ if modo == "Administrador":
 
     st.caption(f"Resultados encontrados: {len(df_filtrado_sku)} SKUs | {len(df_filtrado_pub)} publicaciones")
 
-    st.subheader("Reporte comparativo")
-    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
-    st.download_button(
-        "Descargar Excel comparativas",
-        data=comparativas_bytes,
-        file_name="reporte_comparativas_medidas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=False,
-        key="download_comparativas_admin",
-    )
-
     st.subheader("Asignación de tareas por SKU")
     with st.form("admin_assign_form"):
         operador_destino = st.text_input("Asignar a operador", value="")
@@ -738,6 +727,18 @@ if modo == "Administrador":
                     st.rerun()
                 except Exception as e:
                     st.error(f"No se pudo asignar: {e}")
+
+    st.subheader("Reporte comparativo")
+    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
+    st.download_button(
+        "Descargar Excel comparativas",
+        data=comparativas_bytes,
+        file_name="reporte_comparativas_medidas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=False,
+        key="download_comparativas_admin",
+    )
+
 
 
 # =========================================================
@@ -781,9 +782,9 @@ elif modo == "Operador":
         st.markdown(f"**Publicaciones asociadas:** {fila.get('publicaciones_count', '')}")
         st.markdown(f"**Operador:** {nombre_operador.strip()}")
     with c2:
-        st.markdown(f"**Peso ML:** {fila.get('peso_ml_kg', '')}")
+        st.markdown(f"**Peso ML:** {fila.get('peso_ml_kg', '')} kg")
         st.markdown(
-            f"**Dimensiones ML:** {fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')}"
+            f"**Dimensiones ML:** {fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')} cm"
         )
         st.markdown(badge_estado(str(fila.get("estado_actual", ""))), unsafe_allow_html=True)
 
@@ -878,10 +879,10 @@ elif modo == "Supervisor":
 
     comp = pd.DataFrame(
         [
-            ["Alto", case.get("alto_ml_cm", ""), case.get("alto_real_cm", "")],
-            ["Ancho", case.get("ancho_ml_cm", ""), case.get("ancho_real_cm", "")],
-            ["Profundidad", case.get("profundidad_ml_cm", ""), case.get("profundidad_real_cm", "")],
-            ["Peso", case.get("peso_ml_kg", ""), case.get("peso_real_kg", "")],
+            ["Alto (cm)", case.get("alto_ml_cm", ""), case.get("alto_real_cm", "")],
+            ["Ancho (cm)", case.get("ancho_ml_cm", ""), case.get("ancho_real_cm", "")],
+            ["Profundidad (cm)", case.get("profundidad_ml_cm", ""), case.get("profundidad_real_cm", "")],
+            ["Peso (kg)", case.get("peso_ml_kg", ""), case.get("peso_real_kg", "")],
         ],
         columns=["Campo", "ML", "Real"],
     )
