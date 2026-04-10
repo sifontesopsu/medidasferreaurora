@@ -218,6 +218,60 @@ def badge_estado(estado: str) -> str:
     )
 
 
+def build_drive_view_url(row: pd.Series) -> str:
+    file_id = str(row.get("drive_file_id", "") or "").strip()
+    if file_id:
+        return f"https://drive.google.com/uc?export=view&id={file_id}"
+
+    drive_link = str(row.get("drive_link", "") or "").strip()
+    if not drive_link:
+        return ""
+
+    if "uc?export=view&id=" in drive_link:
+        return drive_link
+
+    if "id=" in drive_link:
+        return drive_link
+
+    if "/file/d/" in drive_link:
+        try:
+            file_id = drive_link.split("/file/d/")[1].split("/")[0]
+            return f"https://drive.google.com/uc?export=view&id={file_id}"
+        except Exception:
+            return drive_link
+
+    return drive_link
+
+
+def render_drive_image(row: pd.Series) -> None:
+    url = build_drive_view_url(row)
+    if not url:
+        st.warning("Sin link")
+        return
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+
+        if "image" in content_type:
+            st.image(response.content, use_container_width=True)
+            return
+
+        if "text/html" in content_type and "drive.google.com" in url:
+            alt_url = build_drive_view_url(pd.Series({"drive_link": url}))
+            response = requests.get(alt_url, headers=headers, timeout=30)
+            response.raise_for_status()
+            if "image" in str(response.headers.get("Content-Type", "")).lower():
+                st.image(response.content, use_container_width=True)
+                return
+
+        st.warning("No se pudo mostrar imagen")
+    except Exception:
+        st.warning("No se pudo mostrar imagen")
+
+
 def show_kpi_row(df: pd.DataFrame) -> None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -368,11 +422,7 @@ def render_evidencias(evidencias: pd.DataFrame) -> None:
             if row is None:
                 st.warning("Falta foto")
                 continue
-            link = str(row.get("drive_link", ""))
-            if link:
-                st.image(link, use_container_width=True)
-            else:
-                st.warning("Sin link de imagen")
+            render_drive_image(row)
 
 
 def require_login() -> Dict[str, Any]:
