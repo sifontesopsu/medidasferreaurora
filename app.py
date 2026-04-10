@@ -313,6 +313,68 @@ def build_ejecutiva_excel_bytes(df: pd.DataFrame, seller_id: str) -> bytes:
     return bio.getvalue()
 
 
+def build_comparativas_excel_bytes(df: pd.DataFrame) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Comparativas"
+
+    headers = [
+        "sku",
+        "mlc",
+        "titulo",
+        "alto_ml_cm",
+        "ancho_ml_cm",
+        "profundidad_ml_cm",
+        "peso_ml_kg",
+        "alto_real_cm",
+        "ancho_real_cm",
+        "profundidad_real_cm",
+        "peso_real_kg",
+        "estado_actual",
+        "operador_asignado",
+        "supervisor",
+        "fecha_ultima_medicion",
+        "fecha_validacion",
+    ]
+
+    header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+    thin = Side(style="thin", color="A0A0A0")
+
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    export_df = df.copy()
+    for col in headers:
+        if col not in export_df.columns:
+            export_df[col] = ""
+
+    export_df = export_df[headers]
+
+    for row_idx, (_, row) in enumerate(export_df.iterrows(), start=2):
+        for col_idx, value in enumerate(row.tolist(), start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    widths = {
+        "A": 18, "B": 16, "C": 55, "D": 12, "E": 12, "F": 16, "G": 12,
+        "H": 12, "I": 12, "J": 16, "K": 12, "L": 24, "M": 18, "N": 18,
+        "O": 20, "P": 20
+    }
+    for col_letter, width in widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+    ws.freeze_panes = "A2"
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+
 def normalize_case_payload(detail: Dict[str, Any], fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     fallback = fallback or {}
     if not isinstance(detail, dict):
@@ -523,6 +585,17 @@ if modo == "Administrador":
 
     st.caption(f"Resultados encontrados: {len(df_filtrado)}")
 
+    st.subheader("Reporte comparativo")
+    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado)
+    st.download_button(
+        "Descargar Excel comparativas",
+        data=comparativas_bytes,
+        file_name="reporte_comparativas_medidas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=False,
+        key="download_comparativas_admin",
+    )
+
     st.subheader("Asignación de tareas")
     with st.form("admin_assign_form"):
         operador_destino = st.text_input("Asignar a operador", value="")
@@ -554,19 +627,7 @@ if modo == "Administrador":
                 except Exception as e:
                     st.error(f"No se pudo asignar: {e}")
 
-    st.subheader("Resumen rápido del caso")
-    df_filtrado["label"] = df_filtrado.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
-    selected_label = st.selectbox("Caso", df_filtrado["label"].tolist(), key="admin_resumen_caso_fast")
-    fila = df_filtrado[df_filtrado["label"] == selected_label].iloc[0]
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f"**SKU:** {fila.get('sku', '')}")
-        st.markdown(f"**MLC:** {fila.get('mlc', '')}")
-        st.markdown(f"**Título:** {fila.get('titulo', '')}")
-    with c2:
-        st.markdown(badge_estado(str(fila.get('estado_actual', ''))), unsafe_allow_html=True)
-        st.markdown(f"**Operador asignado:** {fila.get('operador_asignado', '')}")
-        st.markdown(f"**Ventas:** {fila.get('ventas', '')}")
+
 
 
 # =========================================================
