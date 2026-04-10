@@ -25,7 +25,6 @@ BANDEJAS_ADMINISTRATIVA = {
     "En gestión ejecutiva": ["en_gestion_ejecutivo"],
     "Cerrados": ["resuelto", "rechazado_ml", "rechazado_ejecutivo"],
 }
-ADMIN_VISIBLE_LIMIT = 200
 
 
 # =========================================================
@@ -55,7 +54,7 @@ def api_get_admin_queue(
     query: str = "",
     estados: Optional[List[str]] = None,
     operador: str = "",
-    limit: int = ADMIN_VISIBLE_LIMIT,
+    limit: int = 100000,
 ) -> pd.DataFrame:
     data = api_post(
         {
@@ -487,7 +486,7 @@ if modo == "Administrador":
 
     st.subheader("Filtros")
     with st.form("admin_filters_form"):
-        f1, f2, f3, f4 = st.columns([2, 2, 2, 1])
+        f1, f2, f3 = st.columns([2, 2, 2])
         with f1:
             texto = st.text_input("Buscar SKU / MLC / título")
         with f2:
@@ -495,26 +494,22 @@ if modo == "Administrador":
             estados_sel = st.multiselect("Estado", estados_disponibles, default=estados_disponibles)
         with f3:
             operador_filter = st.text_input("Operador asignado")
-        with f4:
-            limit = st.number_input("Máx filas", min_value=50, max_value=500, value=ADMIN_VISIBLE_LIMIT, step=50)
         filtros_submit = st.form_submit_button("Aplicar filtros", use_container_width=True)
 
     admin_filter_state = st.session_state.setdefault(
         "admin_filters_state",
-        {"texto": "", "estados_sel": counts.get("estados_disponibles", []), "operador_filter": "", "limit": ADMIN_VISIBLE_LIMIT},
+        {"texto": "", "estados_sel": counts.get("estados_disponibles", []), "operador_filter": ""},
     )
     if filtros_submit:
         admin_filter_state["texto"] = texto.strip()
         admin_filter_state["estados_sel"] = estados_sel
         admin_filter_state["operador_filter"] = operador_filter.strip()
-        admin_filter_state["limit"] = int(limit)
 
     try:
         df_filtrado = api_get_admin_queue(
             query=admin_filter_state["texto"],
             estados=admin_filter_state["estados_sel"],
             operador=admin_filter_state["operador_filter"],
-            limit=admin_filter_state["limit"],
         )
     except Exception as e:
         st.error(f"No se pudo cargar la bandeja administrativa: {e}")
@@ -526,7 +521,7 @@ if modo == "Administrador":
         st.info("No hay productos para los filtros seleccionados")
         st.stop()
 
-    st.caption(f"Mostrando hasta {admin_filter_state['limit']} filas. Ajusta los filtros para mayor precisión.")
+    st.caption(f"Resultados encontrados: {len(df_filtrado)}")
 
     st.subheader("Asignación de tareas")
     with st.form("admin_assign_form"):
