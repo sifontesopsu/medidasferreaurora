@@ -7,6 +7,7 @@ import requests
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from PIL import Image
 
 
 st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wide")
@@ -183,9 +184,6 @@ def api_save_measurement_with_photos(
     foto_profundidad,
     foto_peso,
 ) -> Dict[str, Any]:
-    def to_base64(uploaded_file) -> str:
-        return base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
-
     return api_post(
         {
             "action": "save_measurement_with_photos",
@@ -198,33 +196,13 @@ def api_save_measurement_with_photos(
             "peso_real_kg": peso_real_kg,
             "observacion_operador": observacion_operador,
             "photos": [
-                {
-                    "tipo": "alto",
-                    "file_base64": to_base64(foto_alto),
-                    "mime_type": foto_alto.type or "image/jpeg",
-                    "file_name": foto_alto.name,
-                },
-                {
-                    "tipo": "ancho",
-                    "file_base64": to_base64(foto_ancho),
-                    "mime_type": foto_ancho.type or "image/jpeg",
-                    "file_name": foto_ancho.name,
-                },
-                {
-                    "tipo": "profundidad",
-                    "file_base64": to_base64(foto_profundidad),
-                    "mime_type": foto_profundidad.type or "image/jpeg",
-                    "file_name": foto_profundidad.name,
-                },
-                {
-                    "tipo": "peso",
-                    "file_base64": to_base64(foto_peso),
-                    "mime_type": foto_peso.type or "image/jpeg",
-                    "file_name": foto_peso.name,
-                },
+                build_photo_payload(foto_alto, "alto"),
+                build_photo_payload(foto_ancho, "ancho"),
+                build_photo_payload(foto_profundidad, "profundidad"),
+                build_photo_payload(foto_peso, "peso"),
             ],
         },
-        timeout=240,
+        timeout=180,
     )
 
 
@@ -241,9 +219,6 @@ def api_save_measurement_with_photos_by_sku(
     foto_profundidad,
     foto_peso,
 ) -> Dict[str, Any]:
-    def to_base64(uploaded_file) -> str:
-        return base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
-
     return api_post(
         {
             "action": "save_measurement_with_photos_by_sku",
@@ -255,17 +230,17 @@ def api_save_measurement_with_photos_by_sku(
             "peso_real_kg": peso_real_kg,
             "observacion_operador": observacion_operador,
             "photos": [
-                {"tipo": "alto", "file_base64": to_base64(foto_alto), "mime_type": foto_alto.type or "image/jpeg", "file_name": foto_alto.name},
-                {"tipo": "ancho", "file_base64": to_base64(foto_ancho), "mime_type": foto_ancho.type or "image/jpeg", "file_name": foto_ancho.name},
-                {"tipo": "profundidad", "file_base64": to_base64(foto_profundidad), "mime_type": foto_profundidad.type or "image/jpeg", "file_name": foto_profundidad.name},
-                {"tipo": "peso", "file_base64": to_base64(foto_peso), "mime_type": foto_peso.type or "image/jpeg", "file_name": foto_peso.name},
+                build_photo_payload(foto_alto, "alto"),
+                build_photo_payload(foto_ancho, "ancho"),
+                build_photo_payload(foto_profundidad, "profundidad"),
+                build_photo_payload(foto_peso, "peso"),
             ],
         },
-        timeout=240,
+        timeout=180,
     )
 
 
-def api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
+def api_validate_measurementdef api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
     return api_post(
         {
             "action": "validate_measurement",
@@ -314,6 +289,33 @@ def api_update_status(
 # =========================================================
 # HELPERS
 # =========================================================
+def compress_image_upload(uploaded_file, max_size: int = 1600, quality: int = 72) -> Dict[str, Any]:
+    image = Image.open(uploaded_file)
+    image = image.convert("RGB")
+    image.thumbnail((max_size, max_size))
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality, optimize=True)
+    buffer.seek(0)
+
+    return {
+        "file_base64": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+        "mime_type": "image/jpeg",
+        "file_name": f"{uploaded_file.name.rsplit('.', 1)[0]}.jpg",
+        "size_kb": round(len(buffer.getvalue()) / 1024, 1),
+    }
+
+
+def build_photo_payload(uploaded_file, tipo: str) -> Dict[str, Any]:
+    compressed = compress_image_upload(uploaded_file)
+    return {
+        "tipo": tipo,
+        "file_base64": compressed["file_base64"],
+        "mime_type": compressed["mime_type"],
+        "file_name": compressed["file_name"],
+    }
+
+
 def clear_caches() -> None:
     api_get_dashboard_counts.clear()
     api_get_admin_queue.clear()
@@ -726,7 +728,7 @@ if modo == "Administrador":
                 try:
                     result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
                     clear_caches()
-                    st.success(f"SKUs seleccionados: {result.get('skus', 0)} | Publicaciones afectadas: {result.get('assigned', 0)}")
+                    st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"No se pudo asignar: {e}")
@@ -763,7 +765,7 @@ elif modo == "Operador":
     try:
         tareas = api_get_tasks_by_operator_grouped_by_sku(nombre_operador.strip())
     except Exception as e:
-        st.error(f"No se pudo cargar tareas del operador: {e}")
+        st.error(f"No se pudo cargar tareas: {e}")
         st.stop()
 
     tareas = safe_df(tareas)
