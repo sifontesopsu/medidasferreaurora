@@ -240,7 +240,7 @@ def api_save_measurement_with_photos_by_sku(
     )
 
 
-def api_validate_measurementdef api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
+def api_validate_measurement(sku: str, mlc: str, supervisor: str, aprobar: bool, comentario: str) -> Dict[str, Any]:
     return api_post(
         {
             "action": "validate_measurement",
