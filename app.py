@@ -477,7 +477,7 @@ else:
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
 
-    st.markdown("### Evidencia fotográfica")
+    st.markdown("")
     try:
         evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
     except Exception as e:
