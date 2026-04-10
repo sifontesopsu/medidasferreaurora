@@ -1,6 +1,6 @@
 import base64
 import io
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import requests
@@ -74,6 +74,12 @@ def api_get_administrative_queue(statuses: List[str], limit: int = 300) -> pd.Da
 @st.cache_data(ttl=10, show_spinner=False)
 def api_get_case_detail(sku: str, mlc: str) -> Dict[str, Any]:
     return api_post({"action": "get_case_detail", "sku": sku, "mlc": mlc}, timeout=180)
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def api_get_evidencias(sku: str, mlc: str) -> pd.DataFrame:
+    data = api_post({"action": "get_evidencias", "sku": sku, "mlc": mlc}, timeout=120)
+    return pd.DataFrame(data.get("data", []))
 
 
 def api_login_with_pin(usuario: str, pin: str) -> Dict[str, Any]:
@@ -186,6 +192,7 @@ def clear_caches() -> None:
     api_get_pending_validation.clear()
     api_get_administrative_queue.clear()
     api_get_case_detail.clear()
+    api_get_evidencias.clear()
 
 
 def safe_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -291,8 +298,25 @@ def build_ejecutiva_excel_bytes(df: pd.DataFrame, seller_id: str) -> bytes:
     return bio.getvalue()
 
 
-def render_case_summary(detail: Dict[str, Any]) -> None:
-    case = detail.get("case", {})
+def normalize_case_payload(detail: Dict[str, Any], fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    fallback = fallback or {}
+    if not isinstance(detail, dict):
+        return fallback.copy()
+
+    for key in ["case", "item", "data", "detail", "row"]:
+        value = detail.get(key)
+        if isinstance(value, dict) and value:
+            merged = fallback.copy()
+            merged.update(value)
+            return merged
+
+    merged = fallback.copy()
+    flat = {k: v for k, v in detail.items() if not isinstance(v, (dict, list))}
+    merged.update(flat)
+    return merged
+
+
+def render_case_summary(case: Dict[str, Any]) -> None:
     if not case:
         st.warning("No se pudo cargar el caso")
         return
@@ -626,25 +650,32 @@ elif modo == "Supervisor":
     selected_label = st.selectbox("Caso a revisar", pendientes["label"].tolist())
     fila = pendientes[pendientes["label"] == selected_label].iloc[0]
 
+    fallback_case = fila.to_dict()
+    detail = {}
     try:
         detail = api_get_case_detail(str(fila["sku"]), str(fila["mlc"]))
-    except Exception as e:
-        st.error(f"No se pudo cargar detalle: {e}")
-        st.stop()
+    except Exception:
+        detail = {}
 
-    render_case_summary(detail)
+    case = normalize_case_payload(detail, fallback_case)
+    render_case_summary(case)
 
     comp = pd.DataFrame(
         [
-            ["Alto", detail.get("case", {}).get("alto_ml_cm", ""), detail.get("case", {}).get("alto_real_cm", "")],
-            ["Ancho", detail.get("case", {}).get("ancho_ml_cm", ""), detail.get("case", {}).get("ancho_real_cm", "")],
-            ["Profundidad", detail.get("case", {}).get("profundidad_ml_cm", ""), detail.get("case", {}).get("profundidad_real_cm", "")],
-            ["Peso", detail.get("case", {}).get("peso_ml_kg", ""), detail.get("case", {}).get("peso_real_kg", "")],
+            ["Alto", case.get("alto_ml_cm", ""), case.get("alto_real_cm", "")],
+            ["Ancho", case.get("ancho_ml_cm", ""), case.get("ancho_real_cm", "")],
+            ["Profundidad", case.get("profundidad_ml_cm", ""), case.get("profundidad_real_cm", "")],
+            ["Peso", case.get("peso_ml_kg", ""), case.get("peso_real_kg", "")],
         ],
         columns=["Campo", "ML", "Real"],
     )
     st.dataframe(comp, use_container_width=True, hide_index=True)
-    render_evidencias(pd.DataFrame(detail.get("evidencias", [])))
+
+    try:
+        evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
+    except Exception:
+        evidencias = pd.DataFrame(detail.get("evidencias", []))
+    render_evidencias(evidencias)
 
     comentario = st.text_area("Comentario supervisor", key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}")
     c1, c2 = st.columns(2)
@@ -745,17 +776,23 @@ elif modo == "Administrativa":
     selected_label = st.selectbox("Caso", cola["label"].tolist())
     fila = cola[cola["label"] == selected_label].iloc[0]
 
+    fallback_case = fila.to_dict()
+    detail = {}
     try:
         detail = api_get_case_detail(str(fila["sku"]), str(fila["mlc"]))
-    except Exception as e:
-        st.error(f"No se pudo cargar detalle: {e}")
-        st.stop()
+    except Exception:
+        detail = {}
 
-    render_case_summary(detail)
-    render_evidencias(pd.DataFrame(detail.get("evidencias", [])))
+    case = normalize_case_payload(detail, fallback_case)
+    render_case_summary(case)
+    try:
+        evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
+    except Exception:
+        evidencias = pd.DataFrame(detail.get("evidencias", []))
+    render_evidencias(evidencias)
 
     st.markdown("### Acción administrativa")
-    estado_actual = str(detail.get("case", {}).get("estado_actual", ""))
+    estado_actual = str(case.get("estado_actual", ""))
     opciones = ESTADOS_CIERRE.copy()
     if estado_actual == "validado_supervisor":
         opciones = ["listo_para_ejecutivo", "en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
