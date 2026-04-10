@@ -513,34 +513,34 @@ for i, (_, row) in enumerate(evidencias.iterrows()):
         except:
             st.warning("No se pudo mostrar imagen")
 
-    comentario = st.text_area("Comentario supervisor")
-    c1, c2 = st.columns(2)
-    with c1:
-        aprobar_disabled = faltan_fotos
-        if st.button("Aprobar", use_container_width=True, disabled=aprobar_disabled):
-            try:
-                result = api_validate_measurement(
-                    sku=str(fila["sku"]),
-                    mlc=str(fila["mlc"]),
-                    supervisor=supervisor,
-                    aprobar=True,
-                    comentario=comentario,
-                )
-                st.success(f"Estado: {result.get('estado_nuevo')}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"No se pudo aprobar: {e}")
-    with c2:
-        if st.button("Solicitar nueva evidencia", use_container_width=True):
-            try:
-                result = api_validate_measurement(
-                    sku=str(fila["sku"]),
-                    mlc=str(fila["mlc"]),
-                    supervisor=supervisor,
-                    aprobar=False,
-                    comentario=comentario or "Se solicita nueva evidencia",
-                )
-                st.warning(f"Estado: {result.get('estado_nuevo')}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"No se pudo devolver: {e}")
+    comentario = st.text_area("Comentario supervisor", key="comentario_supervisor")
+c1, c2 = st.columns(2)
+with c1:
+    aprobar_disabled = faltan_fotos
+    if st.button("Aprobar", use_container_width=True, disabled=aprobar_disabled, key="btn_aprobar_supervisor"):
+        try:
+            result = api_validate_measurement(
+                sku=str(fila["sku"]),
+                mlc=str(fila["mlc"]),
+                supervisor=supervisor,
+                aprobar=True,
+                comentario=comentario,
+            )
+            st.success(f"Estado: {result.get('estado_nuevo')}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo aprobar: {e}")
+with c2:
+    if st.button("Solicitar nueva evidencia", use_container_width=True, key="btn_nueva_evidencia_supervisor"):
+        try:
+            result = api_validate_measurement(
+                sku=str(fila["sku"]),
+                mlc=str(fila["mlc"]),
+                supervisor=supervisor,
+                aprobar=False,
+                comentario=comentario or "Se solicita nueva evidencia",
+            )
+            st.warning(f"Estado: {result.get('estado_nuevo')}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo devolver: {e}")
