@@ -504,39 +504,64 @@ else:
 
 st.markdown("### Evidencia fotográfica")
 
-# dejar solo la última evidencia por tipo_foto
-evidencias = evidencias.sort_values("fecha_carga").drop_duplicates(subset=["tipo_foto"], keep="last")
+try:
+    evidencias = api_get_evidencias(str(fila["sku"]), str(fila["mlc"]))
+except Exception as e:
+    st.error(f"No se pudieron cargar evidencias: {e}")
+    evidencias = pd.DataFrame()
 
-orden = ["alto", "ancho", "profundidad", "peso"]
-map_evidencias = {str(r["tipo_foto"]).lower(): r for _, r in evidencias.iterrows()}
+faltan_fotos = False
 
-cols = st.columns(4)
+if evidencias.empty:
+    st.warning("No hay fotos disponibles")
+    faltan_fotos = True
+else:
+    # dejar solo la última evidencia por tipo_foto
+    evidencias = evidencias.sort_values("fecha_carga").drop_duplicates(
+        subset=["tipo_foto"], keep="last"
+    )
 
-for i, tipo in enumerate(orden):
-    with cols[i]:
-        st.markdown(f"**{tipo.upper()}**")
+    orden = ["alto", "ancho", "profundidad", "peso"]
+    map_evidencias = {str(r["tipo_foto"]).lower(): r for _, r in evidencias.iterrows()}
 
-        if tipo not in map_evidencias:
-            st.warning("Falta foto")
-            continue
+    faltan_requeridas = [t for t in orden if t not in map_evidencias]
+    faltan_fotos = len(faltan_requeridas) > 0
 
-        row = map_evidencias[tipo]
+    if faltan_fotos:
+        st.error(f"Faltan fotos obligatorias: {', '.join(faltan_requeridas)}")
 
-        try:
-            import requests
-            response = requests.get(row["drive_link"], timeout=30)
-            response.raise_for_status()
-            st.image(response.content, use_container_width=True)
-        except Exception:
-            st.warning("No se pudo mostrar imagen")
+    cols = st.columns(4)
 
-            c1, c2 = st.columns(2)
+    for i, tipo in enumerate(orden):
+        with cols[i]:
+            st.markdown(f"**{tipo.upper()}**")
+
+            if tipo not in map_evidencias:
+                st.warning("Falta foto")
+                continue
+
+            row_evi = map_evidencias[tipo]
+
+            try:
+                import requests
+                response = requests.get(row_evi["drive_link"], timeout=30)
+                response.raise_for_status()
+                st.image(response.content, use_container_width=True)
+            except Exception:
+                st.warning("No se pudo mostrar imagen")
+
+comentario = st.text_area(
+    "Comentario supervisor",
+    key=f"comentario_supervisor_{fila['sku']}_{fila['mlc']}"
+)
+
+c1, c2 = st.columns(2)
+
 with c1:
-    aprobar_disabled = faltan_fotos
     if st.button(
         "Aprobar",
         use_container_width=True,
-        disabled=aprobar_disabled,
+        disabled=faltan_fotos,
         key=f"btn_aprobar_supervisor_{fila['sku']}_{fila['mlc']}"
     ):
         try:
