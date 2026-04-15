@@ -331,6 +331,102 @@ def clear_caches() -> None:
     api_get_evidencias_by_sku.clear()
 
 
+def refresh_supervisor_queue(limit: int = 300, force: bool = False) -> pd.DataFrame:
+    cache_key = "supervisor_queue_df"
+    version_key = "supervisor_queue_version"
+    current_version = st.session_state.get(version_key, 0)
+    cached_df = st.session_state.get(cache_key)
+    cached_version = st.session_state.get(f"{cache_key}_version")
+
+    if (not force) and isinstance(cached_df, pd.DataFrame) and cached_version == current_version:
+        return cached_df.copy()
+
+    df = safe_df(api_get_pending_validation_grouped_by_sku(limit=limit))
+    st.session_state[cache_key] = df.copy()
+    st.session_state[f"{cache_key}_version"] = current_version
+    return df
+
+
+def bump_supervisor_queue_version() -> None:
+    st.session_state["supervisor_queue_version"] = st.session_state.get("supervisor_queue_version", 0) + 1
+
+
+def remove_supervisor_sku_from_queue(sku: str) -> None:
+    cache_key = "supervisor_queue_df"
+    cached_df = st.session_state.get(cache_key)
+    if isinstance(cached_df, pd.DataFrame) and not cached_df.empty:
+        remaining = cached_df[cached_df["sku"].astype(str) != str(sku)].reset_index(drop=True)
+        st.session_state[cache_key] = remaining
+
+
+def get_admin_filter_signature(query: str, estados: Optional[List[str]], operador: str) -> tuple:
+    estados_norm = tuple(sorted(str(x) for x in (estados or [])))
+    return (str(query or "").strip(), estados_norm, str(operador or "").strip())
+
+
+def refresh_admin_queues(
+    query: str = "",
+    estados: Optional[List[str]] = None,
+    operador: str = "",
+    force: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    signature = get_admin_filter_signature(query, estados, operador)
+    version = st.session_state.get("admin_queue_version", 0)
+    cached_signature = st.session_state.get("admin_queue_signature")
+    cached_version = st.session_state.get("admin_queue_cached_version")
+    cached_pub = st.session_state.get("admin_queue_pub_df")
+    cached_sku = st.session_state.get("admin_queue_sku_df")
+
+    if (
+        not force
+        and cached_signature == signature
+        and cached_version == version
+        and isinstance(cached_pub, pd.DataFrame)
+        and isinstance(cached_sku, pd.DataFrame)
+    ):
+        return cached_pub.copy(), cached_sku.copy()
+
+    df_pub = safe_df(api_get_admin_queue(query=query, estados=estados, operador=operador))
+    df_sku = safe_df(api_get_admin_queue_grouped_by_sku(query=query, estados=estados, operador=operador))
+
+    st.session_state["admin_queue_signature"] = signature
+    st.session_state["admin_queue_cached_version"] = version
+    st.session_state["admin_queue_pub_df"] = df_pub.copy()
+    st.session_state["admin_queue_sku_df"] = df_sku.copy()
+    return df_pub, df_sku
+
+
+def update_admin_queue_after_assignment(selected_skus: List[str], operador_destino: str) -> None:
+    selected_skus_str = {str(x) for x in selected_skus}
+    if not selected_skus_str:
+        return
+
+    operador_filter = str(st.session_state.get("admin_filters_state", {}).get("operador_filter", "") or "").strip()
+    keep_rows = (not operador_filter) or (operador_filter.casefold() == str(operador_destino).strip().casefold())
+
+    pub_df = st.session_state.get("admin_queue_pub_df")
+    if isinstance(pub_df, pd.DataFrame) and not pub_df.empty and "sku" in pub_df.columns:
+        mask_pub = pub_df["sku"].astype(str).isin(selected_skus_str)
+        pub_new = pub_df.copy()
+        if keep_rows:
+            if "operador_asignado" in pub_new.columns:
+                pub_new.loc[mask_pub, "operador_asignado"] = str(operador_destino).strip()
+        else:
+            pub_new = pub_new.loc[~mask_pub].reset_index(drop=True)
+        st.session_state["admin_queue_pub_df"] = pub_new
+
+    sku_df = st.session_state.get("admin_queue_sku_df")
+    if isinstance(sku_df, pd.DataFrame) and not sku_df.empty and "sku" in sku_df.columns:
+        mask_sku = sku_df["sku"].astype(str).isin(selected_skus_str)
+        sku_new = sku_df.copy()
+        if keep_rows:
+            if "operador_asignado" in sku_new.columns:
+                sku_new.loc[mask_sku, "operador_asignado"] = str(operador_destino).strip()
+        else:
+            sku_new = sku_new.loc[~mask_sku].reset_index(drop=True)
+        st.session_state["admin_queue_sku_df"] = sku_new
+
+
 def safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return df if isinstance(df, pd.DataFrame) and not df.empty else pd.DataFrame()
 
@@ -676,12 +772,7 @@ if modo == "Administrador":
         admin_filter_state["operador_filter"] = operador_filter.strip()
 
     try:
-        df_filtrado_pub = api_get_admin_queue(
-            query=admin_filter_state["texto"],
-            estados=admin_filter_state["estados_sel"],
-            operador=admin_filter_state["operador_filter"],
-        )
-        df_filtrado_sku = api_get_admin_queue_grouped_by_sku(
+        df_filtrado_pub, df_filtrado_sku = refresh_admin_queues(
             query=admin_filter_state["texto"],
             estados=admin_filter_state["estados_sel"],
             operador=admin_filter_state["operador_filter"],
@@ -727,7 +818,13 @@ if modo == "Administrador":
                 items = seleccionados[["sku"]].to_dict(orient="records")
                 try:
                     result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
-                    clear_caches()
+                    api_get_dashboard_counts.clear()
+                    api_get_tasks_by_operator.clear()
+                    api_get_tasks_by_operator_grouped_by_sku.clear()
+                    update_admin_queue_after_assignment(
+                        [str(x) for x in seleccionados["sku"].astype(str).tolist()],
+                        operador_destino.strip(),
+                    )
                     st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
                     st.rerun()
                 except Exception as e:
@@ -779,6 +876,10 @@ elif modo == "Operador":
     selected_label = st.selectbox("Selecciona SKU", tareas["label"].tolist())
     fila = tareas[tareas["label"] == selected_label].iloc[0]
 
+    if "operador_form_nonce" not in st.session_state:
+        st.session_state["operador_form_nonce"] = 0
+    form_nonce = st.session_state["operador_form_nonce"]
+
     st.markdown("### Información actual")
     c1, c2 = st.columns(2)
     with c1:
@@ -797,18 +898,42 @@ elif modo == "Operador":
         st.markdown("### Ingresar medidas reales")
         col1, col2 = st.columns(2)
         with col1:
-            alto = st.number_input("Alto real (cm)", min_value=0.0, step=0.1, format="%.2f")
-            ancho = st.number_input("Ancho real (cm)", min_value=0.0, step=0.1, format="%.2f")
+            alto = st.number_input(
+                "Alto real (cm)",
+                min_value=0.0,
+                step=0.1,
+                format="%.2f",
+                key=f"alto_real_fast_{form_nonce}",
+            )
+            ancho = st.number_input(
+                "Ancho real (cm)",
+                min_value=0.0,
+                step=0.1,
+                format="%.2f",
+                key=f"ancho_real_fast_{form_nonce}",
+            )
         with col2:
-            profundidad = st.number_input("Profundidad real (cm)", min_value=0.0, step=0.1, format="%.2f")
-            peso = st.number_input("Peso real (kg)", min_value=0.0, step=0.001, format="%.3f")
+            profundidad = st.number_input(
+                "Profundidad real (cm)",
+                min_value=0.0,
+                step=0.1,
+                format="%.2f",
+                key=f"profundidad_real_fast_{form_nonce}",
+            )
+            peso = st.number_input(
+                "Peso real (kg)",
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                key=f"peso_real_fast_{form_nonce}",
+            )
 
-        observacion = st.text_area("Observación operador")
+        observacion = st.text_area("Observación operador", key=f"observacion_operador_fast_{form_nonce}")
         st.markdown("### Fotos de respaldo")
-        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key="foto_alto_fast")
-        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key="foto_ancho_fast")
-        foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key="foto_profundidad_fast")
-        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key="foto_peso_fast")
+        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key=f"foto_alto_fast_{form_nonce}")
+        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key=f"foto_ancho_fast_{form_nonce}")
+        foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key=f"foto_profundidad_fast_{form_nonce}")
+        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key=f"foto_peso_fast_{form_nonce}")
         submitted = st.form_submit_button("Guardar medición del SKU y subir fotos", use_container_width=True)
 
     if submitted:
@@ -841,6 +966,7 @@ elif modo == "Operador":
                 foto_peso=foto_peso,
             )
             clear_caches()
+            st.session_state["operador_form_nonce"] = st.session_state.get("operador_form_nonce", 0) + 1
             st.success(
                 f"Medición SKU guardada. Publicaciones afectadas: {result.get('publicaciones_afectadas', 0)} | ID: {result.get('medicion_id', '')}"
             )
@@ -856,7 +982,7 @@ elif modo == "Supervisor":
     st.title("Módulo Supervisor")
 
     try:
-        pendientes = api_get_pending_validation_grouped_by_sku(limit=300)
+        pendientes = refresh_supervisor_queue(limit=300)
     except Exception as e:
         st.error(f"No se pudo cargar la bandeja: {e}")
         st.stop()
@@ -869,7 +995,13 @@ elif modo == "Supervisor":
         st.stop()
 
     pendientes["label"] = pendientes.apply(lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones", axis=1)
-    selected_label = st.selectbox("SKU a revisar", pendientes["label"].tolist())
+    labels = pendientes["label"].tolist()
+
+    selected_label_key = "supervisor_selected_label"
+    if st.session_state.get(selected_label_key) not in labels:
+        st.session_state[selected_label_key] = labels[0]
+
+    selected_label = st.selectbox("SKU a revisar", labels, key=selected_label_key)
     fila = pendientes[pendientes["label"] == selected_label].iloc[0]
 
     fallback_case = fila.to_dict()
@@ -918,7 +1050,23 @@ elif modo == "Supervisor":
     if aprobar:
         try:
             result = api_validate_measurement_by_sku(str(fila["sku"]), usuario_actual, True, comentario)
-            clear_caches()
+            remove_supervisor_sku_from_queue(str(fila["sku"]))
+            pendientes_restantes = st.session_state.get("supervisor_queue_df", pd.DataFrame())
+            if isinstance(pendientes_restantes, pd.DataFrame) and not pendientes_restantes.empty:
+                pendientes_restantes = pendientes_restantes.copy()
+                pendientes_restantes["label"] = pendientes_restantes.apply(
+                    lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
+                    axis=1,
+                )
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
+            else:
+                st.session_state.pop(selected_label_key, None)
+            bump_supervisor_queue_version()
+            api_get_dashboard_counts.clear()
+            api_get_case_detail.clear()
+            api_get_case_detail_by_sku.clear()
+            api_get_pending_validation.clear()
+            api_get_pending_validation_grouped_by_sku.clear()
             st.success(f"SKU aprobado. Publicaciones afectadas: {result.get('affected', 0)}")
             st.rerun()
         except Exception as e:
@@ -932,7 +1080,23 @@ elif modo == "Supervisor":
                 False,
                 comentario or "Se solicita nueva evidencia",
             )
-            clear_caches()
+            remove_supervisor_sku_from_queue(str(fila["sku"]))
+            pendientes_restantes = st.session_state.get("supervisor_queue_df", pd.DataFrame())
+            if isinstance(pendientes_restantes, pd.DataFrame) and not pendientes_restantes.empty:
+                pendientes_restantes = pendientes_restantes.copy()
+                pendientes_restantes["label"] = pendientes_restantes.apply(
+                    lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
+                    axis=1,
+                )
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
+            else:
+                st.session_state.pop(selected_label_key, None)
+            bump_supervisor_queue_version()
+            api_get_dashboard_counts.clear()
+            api_get_case_detail.clear()
+            api_get_case_detail_by_sku.clear()
+            api_get_pending_validation.clear()
+            api_get_pending_validation_grouped_by_sku.clear()
             st.warning(f"SKU devuelto a medición. Publicaciones afectadas: {result.get('affected', 0)}")
             st.rerun()
         except Exception as e:
