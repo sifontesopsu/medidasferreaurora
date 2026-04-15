@@ -1,5 +1,10 @@
 import base64
+import gc
+import hashlib
+import hmac
 import io
+import json
+import time
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -7,12 +12,14 @@ import requests
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 st.set_page_config(page_title="Control Medidas ML", page_icon="📦", layout="wide")
 
 APPS_SCRIPT_URL = st.secrets.get("APPS_SCRIPT_URL", "")
+SESSION_TOKEN_SECRET = str(st.secrets.get("SESSION_TOKEN_SECRET", "") or f"{APPS_SCRIPT_URL}|control-medidas-ml")
+SESSION_TOKEN_DAYS = int(st.secrets.get("SESSION_TOKEN_DAYS", 14))
 ESTADOS_CIERRE = [
     "listo_para_ejecutivo",
     "en_gestion_ejecutivo",
@@ -289,20 +296,99 @@ def api_update_status(
 # =========================================================
 # HELPERS
 # =========================================================
-def compress_image_upload(uploaded_file, max_size: int = 1600, quality: int = 72) -> Dict[str, Any]:
-    image = Image.open(uploaded_file)
-    image = image.convert("RGB")
-    image.thumbnail((max_size, max_size))
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
 
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=quality, optimize=True)
-    buffer.seek(0)
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("utf-8"))
+
+
+def build_persistent_session_token(user: Dict[str, Any]) -> str:
+    payload = {
+        "user": user,
+        "exp": int(time.time()) + (SESSION_TOKEN_DAYS * 86400),
+    }
+    payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(SESSION_TOKEN_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{signature}"
+
+
+def restore_user_from_session_token(token: str) -> Optional[Dict[str, Any]]:
+    try:
+        payload_b64, signature = token.split(".", 1)
+        expected_signature = hmac.new(SESSION_TOKEN_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            return None
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        user = payload.get("user")
+        if not isinstance(user, dict) or not user:
+            return None
+        return user
+    except Exception:
+        return None
+
+
+def persist_session_token(user: Dict[str, Any]) -> None:
+    st.query_params["session_token"] = build_persistent_session_token(user)
+
+
+def clear_persistent_session_token() -> None:
+    try:
+        del st.query_params["session_token"]
+    except Exception:
+        st.query_params["session_token"] = ""
+
+
+def compress_image_upload(
+    uploaded_file,
+    max_size: int = 960,
+    quality: int = 55,
+    target_size_kb: int = 450,
+    min_quality: int = 42,
+    min_size: int = 720,
+) -> Dict[str, Any]:
+    raw_bytes = uploaded_file.getvalue()
+    source_size_kb = round(len(raw_bytes) / 1024, 1)
+
+    with Image.open(io.BytesIO(raw_bytes)) as image:
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        current_max = max_size
+        current_quality = quality
+        optimized_bytes = b""
+
+        while True:
+            working = image.copy()
+            working.thumbnail((current_max, current_max))
+
+            buffer = io.BytesIO()
+            working.save(buffer, format="JPEG", quality=current_quality, optimize=True, progressive=True)
+            candidate = buffer.getvalue()
+            optimized_bytes = candidate
+            candidate_size_kb = len(candidate) / 1024
+
+            if candidate_size_kb <= target_size_kb:
+                break
+            if current_quality > min_quality:
+                current_quality = max(min_quality, current_quality - 5)
+                continue
+            if current_max > min_size:
+                current_max = max(min_size, current_max - 120)
+                continue
+            break
+
+    del raw_bytes
+    gc.collect()
 
     return {
-        "file_base64": base64.b64encode(buffer.getvalue()).decode("utf-8"),
+        "file_base64": base64.b64encode(optimized_bytes).decode("utf-8"),
         "mime_type": "image/jpeg",
         "file_name": f"{uploaded_file.name.rsplit('.', 1)[0]}.jpg",
-        "size_kb": round(len(buffer.getvalue()) / 1024, 1),
+        "size_kb": round(len(optimized_bytes) / 1024, 1),
+        "source_size_kb": source_size_kb,
     }
 
 
@@ -313,6 +399,8 @@ def build_photo_payload(uploaded_file, tipo: str) -> Dict[str, Any]:
         "file_base64": compressed["file_base64"],
         "mime_type": compressed["mime_type"],
         "file_name": compressed["file_name"],
+        "size_kb": compressed["size_kb"],
+        "source_size_kb": compressed["source_size_kb"],
     }
 
 
@@ -425,75 +513,6 @@ def update_admin_queue_after_assignment(selected_skus: List[str], operador_desti
         else:
             sku_new = sku_new.loc[~mask_sku].reset_index(drop=True)
         st.session_state["admin_queue_sku_df"] = sku_new
-
-
-
-def get_administrativa_queue_signature(statuses: Optional[List[str]], texto: str) -> tuple:
-    estados_norm = tuple(sorted(str(x) for x in (statuses or [])))
-    return (estados_norm, str(texto or "").strip())
-
-
-def refresh_administrativa_queue(
-    statuses: Optional[List[str]] = None,
-    texto: str = "",
-    limit: int = 400,
-    force: bool = False,
-) -> pd.DataFrame:
-    signature = get_administrativa_queue_signature(statuses, texto)
-    version = st.session_state.get("administrativa_queue_version", 0)
-    cached_signature = st.session_state.get("administrativa_queue_signature")
-    cached_version = st.session_state.get("administrativa_queue_cached_version")
-    cached_df = st.session_state.get("administrativa_queue_df")
-
-    if (
-        not force
-        and cached_signature == signature
-        and cached_version == version
-        and isinstance(cached_df, pd.DataFrame)
-    ):
-        return cached_df.copy()
-
-    df = safe_df(api_get_administrative_queue(statuses or [], limit=limit))
-    texto_norm = str(texto or "").strip()
-    if texto_norm and not df.empty:
-        mask = (
-            df["sku"].astype(str).str.contains(texto_norm, case=False, na=False)
-            | df["mlc"].astype(str).str.contains(texto_norm, case=False, na=False)
-            | df["titulo"].astype(str).str.contains(texto_norm, case=False, na=False)
-        )
-        df = df[mask].reset_index(drop=True)
-
-    st.session_state["administrativa_queue_signature"] = signature
-    st.session_state["administrativa_queue_cached_version"] = version
-    st.session_state["administrativa_queue_df"] = df.copy()
-    return df
-
-
-def bump_administrativa_queue_version() -> None:
-    st.session_state["administrativa_queue_version"] = st.session_state.get("administrativa_queue_version", 0) + 1
-
-
-def update_administrativa_queue_after_status_change(sku: str, mlc: str, nuevo_estado: str) -> None:
-    cache_key = "administrativa_queue_df"
-    cached_df = st.session_state.get(cache_key)
-    if not isinstance(cached_df, pd.DataFrame) or cached_df.empty:
-        return
-
-    sku_str = str(sku)
-    mlc_str = str(mlc)
-    df_new = cached_df.copy()
-    mask = (df_new["sku"].astype(str) == sku_str) & (df_new["mlc"].astype(str) == mlc_str)
-    if not mask.any():
-        return
-
-    signature = st.session_state.get("administrativa_queue_signature", (tuple(), ""))
-    statuses_in_view = set(signature[0]) if isinstance(signature, tuple) and len(signature) > 0 else set()
-    if statuses_in_view and str(nuevo_estado) not in statuses_in_view:
-        df_new = df_new.loc[~mask].reset_index(drop=True)
-    else:
-        if "estado_actual" in df_new.columns:
-            df_new.loc[mask, "estado_actual"] = str(nuevo_estado)
-    st.session_state[cache_key] = df_new
 
 
 def safe_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -749,22 +768,35 @@ def render_evidencias(evidencias: pd.DataFrame) -> None:
 
 
 def require_login() -> Dict[str, Any]:
-    if "auth_user" not in st.session_state:
-        st.title("Control Medidas ML")
-        st.subheader("Ingreso con PIN")
-        with st.form("login_form"):
-            usuario = st.text_input("Usuario")
-            pin = st.text_input("PIN", type="password")
-            submitted = st.form_submit_button("Ingresar", use_container_width=True)
-        if submitted:
-            try:
-                auth = api_login_with_pin(usuario, pin)
-                st.session_state["auth_user"] = auth.get("user", {})
-                st.rerun()
-            except Exception as e:
-                st.error(f"No se pudo iniciar sesión: {e}")
-        st.stop()
-    return st.session_state["auth_user"]
+    auth_user = st.session_state.get("auth_user")
+    if isinstance(auth_user, dict) and auth_user:
+        return auth_user
+
+    token = str(st.query_params.get("session_token", "") or "").strip()
+    if token:
+        restored_user = restore_user_from_session_token(token)
+        if restored_user:
+            st.session_state["auth_user"] = restored_user
+            return restored_user
+        clear_persistent_session_token()
+
+    st.title("Control Medidas ML")
+    st.subheader("Ingreso con PIN")
+    st.caption("En celular, la sesión intentará mantenerse aunque el navegador recargue al sacar o adjuntar fotos.")
+    with st.form("login_form"):
+        usuario = st.text_input("Usuario")
+        pin = st.text_input("PIN", type="password")
+        submitted = st.form_submit_button("Ingresar", use_container_width=True)
+    if submitted:
+        try:
+            auth = api_login_with_pin(usuario, pin)
+            user = auth.get("user", {})
+            st.session_state["auth_user"] = user
+            persist_session_token(user)
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo iniciar sesión: {e}")
+    st.stop()
 
 
 def toggle_evidencias(case_key: str) -> None:
@@ -788,6 +820,7 @@ with st.sidebar:
         clear_caches()
         st.rerun()
     if st.button("Cerrar sesión", use_container_width=True):
+        clear_persistent_session_token()
         st.session_state.clear()
         st.rerun()
 
@@ -965,8 +998,8 @@ elif modo == "Operador":
 
     with st.form("form_medicion_fast"):
         st.markdown("### Ingresar medidas reales")
-        row1_col1, row1_col2 = st.columns(2)
-        with row1_col1:
+        col1, col2 = st.columns(2)
+        with col1:
             alto = st.number_input(
                 "Alto real (cm)",
                 min_value=0.0,
@@ -974,8 +1007,6 @@ elif modo == "Operador":
                 format="%.2f",
                 key=f"alto_real_fast_{form_nonce}",
             )
-            foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key=f"foto_alto_fast_{form_nonce}")
-        with row1_col2:
             ancho = st.number_input(
                 "Ancho real (cm)",
                 min_value=0.0,
@@ -983,10 +1014,7 @@ elif modo == "Operador":
                 format="%.2f",
                 key=f"ancho_real_fast_{form_nonce}",
             )
-            foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key=f"foto_ancho_fast_{form_nonce}")
-
-        row2_col1, row2_col2 = st.columns(2)
-        with row2_col1:
+        with col2:
             profundidad = st.number_input(
                 "Profundidad real (cm)",
                 min_value=0.0,
@@ -994,8 +1022,6 @@ elif modo == "Operador":
                 format="%.2f",
                 key=f"profundidad_real_fast_{form_nonce}",
             )
-            foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key=f"foto_profundidad_fast_{form_nonce}")
-        with row2_col2:
             peso = st.number_input(
                 "Peso real (kg)",
                 min_value=0.0,
@@ -1003,9 +1029,13 @@ elif modo == "Operador":
                 format="%.3f",
                 key=f"peso_real_fast_{form_nonce}",
             )
-            foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key=f"foto_peso_fast_{form_nonce}")
 
         observacion = st.text_area("Observación operador", key=f"observacion_operador_fast_{form_nonce}")
+        st.markdown("### Fotos de respaldo")
+        foto_alto = st.file_uploader("Foto alto", type=["jpg", "jpeg", "png"], key=f"foto_alto_fast_{form_nonce}")
+        foto_ancho = st.file_uploader("Foto ancho", type=["jpg", "jpeg", "png"], key=f"foto_ancho_fast_{form_nonce}")
+        foto_profundidad = st.file_uploader("Foto profundidad", type=["jpg", "jpeg", "png"], key=f"foto_profundidad_fast_{form_nonce}")
+        foto_peso = st.file_uploader("Foto peso", type=["jpg", "jpeg", "png"], key=f"foto_peso_fast_{form_nonce}")
         submitted = st.form_submit_button("Guardar medición del SKU y subir fotos", use_container_width=True)
 
     if submitted:
@@ -1070,11 +1100,7 @@ elif modo == "Supervisor":
     labels = pendientes["label"].tolist()
 
     selected_label_key = "supervisor_selected_label"
-    next_label_key = "supervisor_next_label"
-    pending_next_label = st.session_state.pop(next_label_key, None)
-    if pending_next_label in labels:
-        st.session_state[selected_label_key] = pending_next_label
-    elif st.session_state.get(selected_label_key) not in labels:
+    if st.session_state.get(selected_label_key) not in labels:
         st.session_state[selected_label_key] = labels[0]
 
     selected_label = st.selectbox("SKU a revisar", labels, key=selected_label_key)
@@ -1134,10 +1160,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[next_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
                 st.session_state.pop(selected_label_key, None)
-                st.session_state.pop(next_label_key, None)
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
@@ -1165,10 +1190,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[next_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
                 st.session_state.pop(selected_label_key, None)
-                st.session_state.pop(next_label_key, None)
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
@@ -1189,19 +1213,8 @@ elif modo == "Administrativa":
     bandeja = st.radio("Bandeja", list(BANDEJAS_ADMINISTRATIVA.keys()), horizontal=True)
     estados_bandeja = BANDEJAS_ADMINISTRATIVA[bandeja]
 
-    with st.form("administrativa_filter_form"):
-        texto = st.text_input("Buscar SKU / MLC / título", value=st.session_state.get("administrativa_texto", ""))
-        filtro_submit = st.form_submit_button("Aplicar búsqueda", use_container_width=False)
-
-    admina_state = st.session_state.setdefault("administrativa_texto", "")
-    if filtro_submit:
-        st.session_state["administrativa_texto"] = texto.strip()
-        admina_state = texto.strip()
-    else:
-        admina_state = st.session_state.get("administrativa_texto", "")
-
     try:
-        cola = refresh_administrativa_queue(estados_bandeja, texto=admina_state, limit=400)
+        cola = api_get_administrative_queue(estados_bandeja, limit=400)
     except Exception as e:
         st.error(f"No se pudo cargar la bandeja: {e}")
         st.stop()
@@ -1212,6 +1225,25 @@ elif modo == "Administrativa":
     if cola.empty:
         st.info("No hay casos en esta bandeja")
         st.stop()
+
+    with st.form("administrativa_filter_form"):
+        texto = st.text_input("Buscar SKU / MLC / título")
+        filtro_submit = st.form_submit_button("Aplicar búsqueda", use_container_width=False)
+
+    admina_state = st.session_state.setdefault("administrativa_texto", "")
+    if filtro_submit:
+        st.session_state["administrativa_texto"] = texto.strip()
+        admina_state = texto.strip()
+    else:
+        admina_state = st.session_state.get("administrativa_texto", "")
+
+    if admina_state:
+        mask = (
+            cola["sku"].astype(str).str.contains(admina_state, case=False, na=False)
+            | cola["mlc"].astype(str).str.contains(admina_state, case=False, na=False)
+            | cola["titulo"].astype(str).str.contains(admina_state, case=False, na=False)
+        )
+        cola = cola[mask]
 
     st.subheader("Bandeja de trabajo")
     cols = [
@@ -1256,16 +1288,7 @@ elif modo == "Administrativa":
                 )
 
     cola["label"] = cola.apply(lambda r: f"{r['sku']} | {r['mlc']} | {r['titulo']}", axis=1)
-    admina_selected_label_key = "administrativa_selected_label"
-    admina_next_label_key = "administrativa_next_label"
-    admina_labels = cola["label"].tolist()
-    pending_admina_next_label = st.session_state.pop(admina_next_label_key, None)
-    if pending_admina_next_label in admina_labels:
-        st.session_state[admina_selected_label_key] = pending_admina_next_label
-    elif st.session_state.get(admina_selected_label_key) not in admina_labels:
-        st.session_state[admina_selected_label_key] = admina_labels[0]
-
-    selected_label = st.selectbox("Caso", admina_labels, key=admina_selected_label_key)
+    selected_label = st.selectbox("Caso", cola["label"].tolist())
     fila = cola[cola["label"] == selected_label].iloc[0]
 
     fallback_case = fila.to_dict()
@@ -1322,12 +1345,6 @@ elif modo == "Administrativa":
             st.error("Debes ingresar ticket ejecutivo para este estado")
             st.stop()
         try:
-            current_label_idx = admina_labels.index(selected_label) if selected_label in admina_labels else 0
-            remaining_labels = [lbl for lbl in admina_labels if lbl != selected_label]
-            next_label = ""
-            if remaining_labels:
-                next_label = remaining_labels[min(current_label_idx, len(remaining_labels) - 1)]
-
             api_update_status(
                 sku=str(fila["sku"]),
                 mlc=str(fila["mlc"]),
@@ -1336,14 +1353,7 @@ elif modo == "Administrativa":
                 comentario=comentario.strip(),
                 ticket_ejecutivo=ticket.strip(),
             )
-            api_get_dashboard_counts.clear()
-            api_get_case_detail.clear()
-            api_get_case_detail_by_sku.clear()
-            api_get_evidencias.clear()
-            api_get_evidencias_by_sku.clear()
-            update_administrativa_queue_after_status_change(str(fila["sku"]), str(fila["mlc"]), nuevo_estado)
-            if next_label:
-                st.session_state[admina_next_label_key] = next_label
+            clear_caches()
             st.success(f"Caso actualizado a {nuevo_estado}")
             st.rerun()
         except Exception as e:
