@@ -419,6 +419,71 @@ def clear_caches() -> None:
     api_get_evidencias_by_sku.clear()
 
 
+def get_allowed_admin_status_transitions(estado_actual: str) -> List[str]:
+    estado_actual = str(estado_actual or "").strip()
+    if estado_actual == "validado_supervisor":
+        return ["listo_para_ejecutivo", "en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
+    if estado_actual == "listo_para_ejecutivo":
+        return ["en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
+    if estado_actual == "en_gestion_ejecutivo":
+        return ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]
+    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
+        return [estado_actual]
+    return ESTADOS_CIERRE.copy()
+
+
+def validate_admin_status_change(
+    estado_actual: str,
+    nuevo_estado: str,
+    comentario: str,
+    ticket_ejecutivo: str = "",
+) -> Optional[str]:
+    estado_actual = str(estado_actual or "").strip()
+    nuevo_estado = str(nuevo_estado or "").strip()
+    comentario = str(comentario or "").strip()
+    ticket_ejecutivo = str(ticket_ejecutivo or "").strip()
+
+    if not comentario:
+        return "El comentario es obligatorio"
+
+    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
+        return "El caso ya está cerrado"
+
+    permitidos = get_allowed_admin_status_transitions(estado_actual)
+    if nuevo_estado not in permitidos:
+        return f"La transición desde {estado_actual} hacia {nuevo_estado} no está permitida"
+
+    requiere_ticket = nuevo_estado in ["listo_para_ejecutivo", "en_gestion_ejecutivo"]
+    if requiere_ticket and not ticket_ejecutivo:
+        return "Debes ingresar ticket ejecutivo para este estado"
+
+    return None
+
+
+def validate_bulk_admin_status_change(
+    casos: List[Dict[str, Any]],
+    nuevo_estado: str,
+    comentario: str,
+    ticket_ejecutivo: str = "",
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    validos: List[Dict[str, Any]] = []
+    bloqueados: List[Dict[str, Any]] = []
+
+    for caso in casos:
+        error = validate_admin_status_change(
+            estado_actual=str(caso.get("estado_actual", "")),
+            nuevo_estado=nuevo_estado,
+            comentario=comentario,
+            ticket_ejecutivo=ticket_ejecutivo,
+        )
+        if error:
+            bloqueados.append({"caso": caso, "motivo": error})
+        else:
+            validos.append(caso)
+
+    return validos, bloqueados
+
+
 def refresh_supervisor_queue(limit: int = 300, force: bool = False) -> pd.DataFrame:
     cache_key = "supervisor_queue_df"
     version_key = "supervisor_queue_version"
@@ -1254,6 +1319,125 @@ elif modo == "Administrativa":
     ]
     st.dataframe(cola[cols], use_container_width=True, hide_index=True)
 
+    st.markdown("### Cambio masivo de estado")
+    bulk_cols = [c for c in cols if c in cola.columns]
+    bulk_editor = st.data_editor(
+        cola[bulk_cols].assign(seleccionar=False),
+        use_container_width=True,
+        hide_index=True,
+        column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+        disabled=bulk_cols,
+        key=f"administrativa_bulk_editor_{bandeja}",
+    )
+    seleccionados_bulk = bulk_editor[bulk_editor["seleccionar"] == True].copy()  # noqa: E712
+
+    estado_bulk = st.selectbox(
+        "Nuevo estado masivo",
+        ["listo_para_ejecutivo", "en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"],
+        key=f"administrativa_bulk_estado_{bandeja}",
+    )
+    requiere_ticket_bulk = estado_bulk in ["listo_para_ejecutivo", "en_gestion_ejecutivo"]
+    ticket_bulk = st.text_input(
+        "Ticket ejecutivo masivo",
+        key=f"administrativa_bulk_ticket_{bandeja}",
+        help="Obligatorio cuando el estado masivo es listo_para_ejecutivo o en_gestion_ejecutivo.",
+    )
+    comentario_bulk = st.text_area(
+        "Comentario masivo",
+        height=100,
+        key=f"administrativa_bulk_comentario_{bandeja}",
+    )
+
+    bulk_state_key = f"administrativa_bulk_validation_{bandeja}"
+    c_bulk1, c_bulk2 = st.columns(2)
+    with c_bulk1:
+        validar_bulk = st.button("Validar selección masiva", use_container_width=True, key=f"btn_validar_bulk_{bandeja}")
+    with c_bulk2:
+        confirmar_bulk = st.button("Confirmar cambio masivo", use_container_width=True, key=f"btn_confirmar_bulk_{bandeja}")
+
+    if validar_bulk:
+        if seleccionados_bulk.empty:
+            st.error("Debes seleccionar al menos un caso para el cambio masivo")
+            st.session_state.pop(bulk_state_key, None)
+        else:
+            casos_bulk = seleccionados_bulk.drop(columns=["seleccionar"], errors="ignore").to_dict("records")
+            validos_bulk, bloqueados_bulk = validate_bulk_admin_status_change(
+                casos=casos_bulk,
+                nuevo_estado=estado_bulk,
+                comentario=comentario_bulk,
+                ticket_ejecutivo=ticket_bulk,
+            )
+            st.session_state[bulk_state_key] = {
+                "nuevo_estado": estado_bulk,
+                "ticket": ticket_bulk.strip(),
+                "comentario": comentario_bulk.strip(),
+                "validos": validos_bulk,
+                "bloqueados": bloqueados_bulk,
+            }
+
+    bulk_state = st.session_state.get(bulk_state_key)
+    if bulk_state:
+        st.info(
+            f"Validación lista. Válidos: {len(bulk_state.get('validos', []))} | "
+            f"Bloqueados: {len(bulk_state.get('bloqueados', []))}"
+        )
+        if bulk_state.get("bloqueados"):
+            bloqueados_df = pd.DataFrame([
+                {
+                    "sku": str(item.get("caso", {}).get("sku", "")),
+                    "mlc": str(item.get("caso", {}).get("mlc", "")),
+                    "estado_actual": str(item.get("caso", {}).get("estado_actual", "")),
+                    "motivo": str(item.get("motivo", "")),
+                }
+                for item in bulk_state.get("bloqueados", [])
+            ])
+            if not bloqueados_df.empty:
+                with st.expander("Ver casos bloqueados"):
+                    st.dataframe(bloqueados_df, use_container_width=True, hide_index=True)
+
+    if confirmar_bulk:
+        bulk_state = st.session_state.get(bulk_state_key)
+        if not bulk_state:
+            st.error("Primero debes validar la selección masiva")
+        elif not bulk_state.get("validos"):
+            st.error("No hay casos válidos para actualizar")
+        else:
+            actualizados = []
+            errores_bulk = []
+            for caso_bulk in bulk_state.get("validos", []):
+                try:
+                    api_update_status(
+                        sku=str(caso_bulk.get("sku", "")),
+                        mlc=str(caso_bulk.get("mlc", "")),
+                        nuevo_estado=str(bulk_state.get("nuevo_estado", "")),
+                        usuario=usuario_actual,
+                        comentario=str(bulk_state.get("comentario", "")),
+                        ticket_ejecutivo=str(bulk_state.get("ticket", "")),
+                    )
+                    actualizados.append(
+                        {
+                            "sku": str(caso_bulk.get("sku", "")),
+                            "mlc": str(caso_bulk.get("mlc", "")),
+                            "resultado": "OK",
+                        }
+                    )
+                except Exception as e:
+                    errores_bulk.append(
+                        {
+                            "sku": str(caso_bulk.get("sku", "")),
+                            "mlc": str(caso_bulk.get("mlc", "")),
+                            "resultado": f"ERROR: {e}",
+                        }
+                    )
+
+            clear_caches()
+            st.session_state.pop(bulk_state_key, None)
+            st.success(f"Actualizados correctamente: {len(actualizados)}")
+            if errores_bulk:
+                st.error(f"Con error: {len(errores_bulk)}")
+                st.dataframe(pd.DataFrame(errores_bulk), use_container_width=True, hide_index=True)
+            st.rerun()
+
     if bandeja == "Pendientes por gestionar":
         st.markdown("### Exportar Excel para ejecutiva")
         seller_id_default = st.secrets.get("SELLER_ID", "")
@@ -1319,15 +1503,7 @@ elif modo == "Administrativa":
 
     st.markdown("### Acción administrativa")
     estado_actual = str(case.get("estado_actual", ""))
-    opciones = ESTADOS_CIERRE.copy()
-    if estado_actual == "validado_supervisor":
-        opciones = ["listo_para_ejecutivo", "en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
-    elif estado_actual == "listo_para_ejecutivo":
-        opciones = ["en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
-    elif estado_actual == "en_gestion_ejecutivo":
-        opciones = ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]
-    elif estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
-        opciones = [estado_actual]
+    opciones = get_allowed_admin_status_transitions(estado_actual)
 
     with st.form(f"administrativa_action_form_{fila['sku']}_{fila['mlc']}"):
         nuevo_estado = st.selectbox("Nuevo estado", opciones)
@@ -1337,12 +1513,14 @@ elif modo == "Administrativa":
         guardar_gestion = st.form_submit_button("Guardar gestión", use_container_width=True)
 
     if guardar_gestion:
-        requiere_ticket = nuevo_estado in ["listo_para_ejecutivo", "en_gestion_ejecutivo"]
-        if not comentario.strip():
-            st.error("El comentario es obligatorio")
-            st.stop()
-        if requiere_ticket and not ticket.strip():
-            st.error("Debes ingresar ticket ejecutivo para este estado")
+        error_validacion = validate_admin_status_change(
+            estado_actual=estado_actual,
+            nuevo_estado=nuevo_estado,
+            comentario=comentario,
+            ticket_ejecutivo=ticket,
+        )
+        if error_validacion:
+            st.error(error_validacion)
             st.stop()
         try:
             api_update_status(
