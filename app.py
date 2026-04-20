@@ -24,6 +24,7 @@ ESTADOS_CIERRE = [
     "listo_para_ejecutivo",
     "en_gestion_ejecutivo",
     "resuelto",
+    "precio_actualizado",
     "rechazado_ml",
     "rechazado_ejecutivo",
 ]
@@ -427,7 +428,9 @@ def get_allowed_admin_status_transitions(estado_actual: str) -> List[str]:
         return ["en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
     if estado_actual == "en_gestion_ejecutivo":
         return ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]
-    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
+    if estado_actual == "resuelto":
+        return ["precio_actualizado"]
+    if estado_actual in ["precio_actualizado", "rechazado_ml", "rechazado_ejecutivo"]:
         return [estado_actual]
     return ESTADOS_CIERRE.copy()
 
@@ -446,7 +449,7 @@ def validate_admin_status_change(
     if not comentario:
         return "El comentario es obligatorio"
 
-    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
+    if estado_actual in ["precio_actualizado", "rechazado_ml", "rechazado_ejecutivo"]:
         return "El caso ya está cerrado"
 
     permitidos = get_allowed_admin_status_transitions(estado_actual)
@@ -593,6 +596,7 @@ def badge_estado(estado: str) -> str:
         "listo_para_ejecutivo": "#6366f1",
         "en_gestion_ejecutivo": "#8b5cf6",
         "resuelto": "#16a34a",
+        "precio_actualizado": "#0f766e",
         "rechazado_ml": "#dc2626",
         "rechazado_ejecutivo": "#b91c1c",
     }
@@ -960,53 +964,115 @@ if modo == "Administrador":
 
     st.caption(f"Resultados encontrados: {len(df_filtrado_sku)} SKUs | {len(df_filtrado_pub)} publicaciones")
 
-    st.subheader("Asignación de tareas por SKU")
-    with st.form("admin_assign_form"):
-        operador_destino = st.text_input("Asignar a operador", value="")
-        cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
-        edited = st.data_editor(
-            df_filtrado_sku[cols_view].assign(seleccionar=False),
-            use_container_width=True,
-            hide_index=True,
-            column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
-            disabled=cols_view,
-            key="admin_editor_asignacion_sku",
-        )
-        asignar_btn = st.form_submit_button("Asignar SKUs seleccionados", use_container_width=True)
+    tab_asignacion, tab_precios = st.tabs(["Asignación de tareas", "Precios resueltos"])
 
-    if asignar_btn:
-        if not operador_destino.strip():
-            st.warning("Debes indicar el nombre del operador")
-        else:
-            seleccionados = edited[edited["seleccionar"] == True]  # noqa: E712
-            if seleccionados.empty:
-                st.warning("No seleccionaste SKUs")
+    with tab_asignacion:
+        st.subheader("Asignación de tareas por SKU")
+        with st.form("admin_assign_form"):
+            operador_destino = st.text_input("Asignar a operador", value="")
+            cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
+            edited = st.data_editor(
+                df_filtrado_sku[cols_view].assign(seleccionar=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+                disabled=cols_view,
+                key="admin_editor_asignacion_sku",
+            )
+            asignar_btn = st.form_submit_button("Asignar SKUs seleccionados", use_container_width=True)
+
+        if asignar_btn:
+            if not operador_destino.strip():
+                st.warning("Debes indicar el nombre del operador")
             else:
-                items = seleccionados[["sku"]].to_dict(orient="records")
-                try:
-                    result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
-                    api_get_dashboard_counts.clear()
-                    api_get_tasks_by_operator.clear()
-                    api_get_tasks_by_operator_grouped_by_sku.clear()
-                    update_admin_queue_after_assignment(
-                        [str(x) for x in seleccionados["sku"].astype(str).tolist()],
-                        operador_destino.strip(),
-                    )
-                    st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"No se pudo asignar: {e}")
+                seleccionados = edited[edited["seleccionar"] == True]  # noqa: E712
+                if seleccionados.empty:
+                    st.warning("No seleccionaste SKUs")
+                else:
+                    items = seleccionados[["sku"]].to_dict(orient="records")
+                    try:
+                        result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
+                        api_get_dashboard_counts.clear()
+                        api_get_tasks_by_operator.clear()
+                        api_get_tasks_by_operator_grouped_by_sku.clear()
+                        update_admin_queue_after_assignment(
+                            [str(x) for x in seleccionados["sku"].astype(str).tolist()],
+                            operador_destino.strip(),
+                        )
+                        st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"No se pudo asignar: {e}")
 
-    st.subheader("Reporte comparativo")
-    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
-    st.download_button(
-        "Descargar Excel comparativas",
-        data=comparativas_bytes,
-        file_name="reporte_comparativas_medidas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=False,
-        key="download_comparativas_admin",
-    )
+        st.subheader("Reporte comparativo")
+        comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
+        st.download_button(
+            "Descargar Excel comparativas",
+            data=comparativas_bytes,
+            file_name="reporte_comparativas_medidas.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=False,
+            key="download_comparativas_admin",
+        )
+
+    with tab_precios:
+        st.subheader("Bandeja de precios resueltos")
+        cola_precios = safe_df(df_filtrado_pub[df_filtrado_pub["estado_actual"].astype(str) == "resuelto"].copy())
+
+        if cola_precios.empty:
+            st.info("No hay casos resueltos pendientes de marcar como precio actualizado")
+        else:
+            st.caption(f"Casos resueltos pendientes en esta vista: {len(cola_precios)}")
+            cols_precios = [
+                c for c in [
+                    "sku", "mlc", "titulo", "estado_actual", "fecha_resolucion", "ticket_ejecutivo", "observacion_admin"
+                ] if c in cola_precios.columns
+            ]
+            editor_precios = st.data_editor(
+                cola_precios[cols_precios].assign(seleccionar=False),
+                use_container_width=True,
+                hide_index=True,
+                column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+                disabled=cols_precios,
+                key="admin_editor_precios_resueltos",
+            )
+            seleccionados_precios = editor_precios[editor_precios["seleccionar"] == True].copy()  # noqa: E712
+
+            if st.button("Marcar seleccionados como precio_actualizado", use_container_width=True, key="btn_precio_actualizado_masivo"):
+                if seleccionados_precios.empty:
+                    st.warning("Debes seleccionar al menos un caso resuelto")
+                else:
+                    ok_precios = []
+                    err_precios = []
+                    for _, row_precio in seleccionados_precios.iterrows():
+                        try:
+                            api_update_status(
+                                sku=str(row_precio.get("sku", "")),
+                                mlc=str(row_precio.get("mlc", "")),
+                                nuevo_estado="precio_actualizado",
+                                usuario=usuario_actual,
+                                comentario="",
+                                ticket_ejecutivo="",
+                            )
+                            ok_precios.append({
+                                "sku": str(row_precio.get("sku", "")),
+                                "mlc": str(row_precio.get("mlc", "")),
+                                "resultado": "OK",
+                            })
+                        except Exception as e:
+                            err_precios.append({
+                                "sku": str(row_precio.get("sku", "")),
+                                "mlc": str(row_precio.get("mlc", "")),
+                                "resultado": f"ERROR: {e}",
+                            })
+
+                    clear_caches()
+                    if ok_precios:
+                        st.success(f"Marcados como precio_actualizado: {len(ok_precios)}")
+                    if err_precios:
+                        st.error(f"Errores al actualizar: {len(err_precios)}")
+                        st.dataframe(pd.DataFrame(err_precios), use_container_width=True, hide_index=True)
+                    st.rerun()
 
 
 
@@ -1165,12 +1231,7 @@ elif modo == "Supervisor":
     labels = pendientes["label"].tolist()
 
     selected_label_key = "supervisor_selected_label"
-    pending_next_label_key = "supervisor_next_selected_label"
-
-    pending_next_label = st.session_state.pop(pending_next_label_key, None)
-    if pending_next_label in labels:
-        st.session_state[selected_label_key] = pending_next_label
-    elif st.session_state.get(selected_label_key) not in labels:
+    if st.session_state.get(selected_label_key) not in labels:
         st.session_state[selected_label_key] = labels[0]
 
     selected_label = st.selectbox("SKU a revisar", labels, key=selected_label_key)
@@ -1230,9 +1291,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[pending_next_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
-                st.session_state[pending_next_label_key] = None
+                st.session_state.pop(selected_label_key, None)
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
@@ -1260,9 +1321,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[pending_next_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
-                st.session_state[pending_next_label_key] = None
+                st.session_state.pop(selected_label_key, None)
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
