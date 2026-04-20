@@ -24,7 +24,6 @@ ESTADOS_CIERRE = [
     "listo_para_ejecutivo",
     "en_gestion_ejecutivo",
     "resuelto",
-    "precio_actualizado",
     "rechazado_ml",
     "rechazado_ejecutivo",
 ]
@@ -294,6 +293,35 @@ def api_update_status(
     )
 
 
+def normalize_identifier(value: Any) -> str:
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return ""
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
+
+
+def api_bulk_update_status(items: List[Dict[str, str]], nuevo_estado: str, usuario: str) -> Dict[str, Any]:
+    normalized_items: List[Dict[str, str]] = []
+    for item in items:
+        sku = normalize_identifier(item.get("sku", ""))
+        mlc = normalize_identifier(item.get("mlc", ""))
+        if sku and mlc:
+            normalized_items.append({"sku": sku, "mlc": mlc})
+    if not normalized_items:
+        raise RuntimeError("No hay items válidos para actualizar")
+    return api_post(
+        {
+            "action": "bulk_update_status",
+            "items": normalized_items,
+            "nuevo_estado": nuevo_estado,
+            "usuario": usuario,
+        },
+        timeout=180,
+    )
+
+
 # =========================================================
 # HELPERS
 # =========================================================
@@ -428,9 +456,7 @@ def get_allowed_admin_status_transitions(estado_actual: str) -> List[str]:
         return ["en_gestion_ejecutivo", "resuelto", "rechazado_ml", "rechazado_ejecutivo"]
     if estado_actual == "en_gestion_ejecutivo":
         return ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]
-    if estado_actual == "resuelto":
-        return ["precio_actualizado"]
-    if estado_actual in ["precio_actualizado", "rechazado_ml", "rechazado_ejecutivo"]:
+    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
         return [estado_actual]
     return ESTADOS_CIERRE.copy()
 
@@ -449,7 +475,7 @@ def validate_admin_status_change(
     if not comentario:
         return "El comentario es obligatorio"
 
-    if estado_actual in ["precio_actualizado", "rechazado_ml", "rechazado_ejecutivo"]:
+    if estado_actual in ["resuelto", "rechazado_ml", "rechazado_ejecutivo"]:
         return "El caso ya está cerrado"
 
     permitidos = get_allowed_admin_status_transitions(estado_actual)
@@ -596,7 +622,6 @@ def badge_estado(estado: str) -> str:
         "listo_para_ejecutivo": "#6366f1",
         "en_gestion_ejecutivo": "#8b5cf6",
         "resuelto": "#16a34a",
-        "precio_actualizado": "#0f766e",
         "rechazado_ml": "#dc2626",
         "rechazado_ejecutivo": "#b91c1c",
     }
@@ -964,120 +989,105 @@ if modo == "Administrador":
 
     st.caption(f"Resultados encontrados: {len(df_filtrado_sku)} SKUs | {len(df_filtrado_pub)} publicaciones")
 
-    tab_asignacion, tab_precios = st.tabs(["Asignación de tareas", "Precios resueltos"])
+    st.subheader("Asignación de tareas por SKU")
+    with st.form("admin_assign_form"):
+        operador_destino = st.text_input("Asignar a operador", value="")
+        cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
+        edited = st.data_editor(
+            df_filtrado_sku[cols_view].assign(seleccionar=False),
+            use_container_width=True,
+            hide_index=True,
+            column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+            disabled=cols_view,
+            key="admin_editor_asignacion_sku",
+        )
+        asignar_btn = st.form_submit_button("Asignar SKUs seleccionados", use_container_width=True)
 
-    with tab_asignacion:
-        st.subheader("Asignación de tareas por SKU")
-        with st.form("admin_assign_form"):
-            operador_destino = st.text_input("Asignar a operador", value="")
-            cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
-            edited = st.data_editor(
-                df_filtrado_sku[cols_view].assign(seleccionar=False),
+    if asignar_btn:
+        if not operador_destino.strip():
+            st.warning("Debes indicar el nombre del operador")
+        else:
+            seleccionados = edited[edited["seleccionar"] == True]  # noqa: E712
+            if seleccionados.empty:
+                st.warning("No seleccionaste SKUs")
+            else:
+                items = seleccionados[["sku"]].to_dict(orient="records")
+                try:
+                    result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
+                    api_get_dashboard_counts.clear()
+                    api_get_tasks_by_operator.clear()
+                    api_get_tasks_by_operator_grouped_by_sku.clear()
+                    update_admin_queue_after_assignment(
+                        [str(x) for x in seleccionados["sku"].astype(str).tolist()],
+                        operador_destino.strip(),
+                    )
+                    st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"No se pudo asignar: {e}")
+
+    st.subheader("Precios resueltos")
+    df_resueltos = safe_df(
+        api_get_admin_queue(
+            query="",
+            estados=["resuelto"],
+            operador="",
+            limit=1000000,
+        )
+    )
+
+    if df_resueltos.empty:
+        st.info("No hay casos resueltos pendientes de marcar como precio_actualizado")
+    else:
+        cols_precio = [c for c in ["sku", "mlc", "titulo", "ventas", "estado_actual", "fecha_resolucion"] if c in df_resueltos.columns]
+        with st.form("admin_precio_actualizado_form"):
+            precio_editor = st.data_editor(
+                df_resueltos[cols_precio].assign(seleccionar=False),
                 use_container_width=True,
                 hide_index=True,
                 column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
-                disabled=cols_view,
-                key="admin_editor_asignacion_sku",
+                disabled=cols_precio,
+                key="admin_editor_precio_actualizado",
             )
-            asignar_btn = st.form_submit_button("Asignar SKUs seleccionados", use_container_width=True)
+            marcar_precio_btn = st.form_submit_button("Marcar seleccionados como precio_actualizado", use_container_width=True)
 
-        if asignar_btn:
-            if not operador_destino.strip():
-                st.warning("Debes indicar el nombre del operador")
+        if marcar_precio_btn:
+            seleccionados_precio = precio_editor[precio_editor["seleccionar"] == True]  # noqa: E712
+            if seleccionados_precio.empty:
+                st.warning("No seleccionaste casos resueltos")
             else:
-                seleccionados = edited[edited["seleccionar"] == True]  # noqa: E712
-                if seleccionados.empty:
-                    st.warning("No seleccionaste SKUs")
-                else:
-                    items = seleccionados[["sku"]].to_dict(orient="records")
-                    try:
-                        result = api_assign_tasks_grouped_by_sku(items, operador_destino.strip(), usuario_actual)
-                        api_get_dashboard_counts.clear()
-                        api_get_tasks_by_operator.clear()
-                        api_get_tasks_by_operator_grouped_by_sku.clear()
-                        update_admin_queue_after_assignment(
-                            [str(x) for x in seleccionados["sku"].astype(str).tolist()],
-                            operador_destino.strip(),
-                        )
-                        st.success(f"Publicaciones afectadas por asignación: {result.get('assigned', 0)}")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"No se pudo asignar: {e}")
+                items_precio = [
+                    {
+                        "sku": normalize_identifier(row_precio.get("sku", "")),
+                        "mlc": normalize_identifier(row_precio.get("mlc", "")),
+                    }
+                    for _, row_precio in seleccionados_precio.iterrows()
+                ]
+                try:
+                    result_precio = api_bulk_update_status(items_precio, "precio_actualizado", usuario_actual)
+                    api_get_dashboard_counts.clear()
+                    api_get_admin_queue.clear()
+                    api_get_admin_queue_grouped_by_sku.clear()
+                    api_get_administrative_queue.clear()
+                    actualizados = int(result_precio.get("updated", 0))
+                    errores = int(result_precio.get("errors", 0))
+                    st.success(f"Precios actualizados: {actualizados}")
+                    if errores:
+                        st.warning(f"Registros con error: {errores}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"No se pudo marcar precio_actualizado: {e}")
 
-        st.subheader("Reporte comparativo")
-        comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
-        st.download_button(
-            "Descargar Excel comparativas",
-            data=comparativas_bytes,
-            file_name="reporte_comparativas_medidas.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=False,
-            key="download_comparativas_admin",
-        )
-
-    with tab_precios:
-        st.subheader("Bandeja de precios resueltos")
-        cola_precios = safe_df(df_filtrado_pub[df_filtrado_pub["estado_actual"].astype(str) == "resuelto"].copy())
-
-        if cola_precios.empty:
-            st.info("No hay casos resueltos pendientes de marcar como precio actualizado")
-        else:
-            st.caption(f"Casos resueltos pendientes en esta vista: {len(cola_precios)}")
-            cols_precios = [
-                c for c in [
-                    "sku", "mlc", "titulo", "estado_actual", "fecha_resolucion", "ticket_ejecutivo", "observacion_admin"
-                ] if c in cola_precios.columns
-            ]
-
-            with st.form("form_precios_resueltos_admin"):
-                editor_precios = st.data_editor(
-                    cola_precios[cols_precios].assign(seleccionar=False),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
-                    disabled=cols_precios,
-                    key="admin_editor_precios_resueltos",
-                )
-                submit_precios = st.form_submit_button(
-                    "Marcar seleccionados como precio_actualizado",
-                    use_container_width=True,
-                )
-
-            if submit_precios:
-                seleccionados_precios = editor_precios[editor_precios["seleccionar"] == True].copy()  # noqa: E712
-                if seleccionados_precios.empty:
-                    st.warning("Debes seleccionar al menos un caso resuelto")
-                else:
-                    items_precios = [
-                        {
-                            "sku": normalize_identifier(row_precio.get("sku", "")),
-                            "mlc": normalize_identifier(row_precio.get("mlc", "")),
-                        }
-                        for _, row_precio in seleccionados_precios.iterrows()
-                    ]
-                    items_precios = [x for x in items_precios if x["sku"] and x["mlc"]]
-
-                    if not items_precios:
-                        st.error("No se pudieron leer SKU/MLC válidos desde la selección")
-                    else:
-                        try:
-                            result_bulk = api_bulk_update_status(
-                                items=items_precios,
-                                nuevo_estado="precio_actualizado",
-                                usuario=usuario_actual,
-                            )
-                            clear_caches()
-                            actualizados = int(result_bulk.get("updated", 0) or 0)
-                            errores = result_bulk.get("errors", []) or []
-
-                            if actualizados:
-                                st.success(f"Marcados como precio_actualizado: {actualizados}")
-                            if errores:
-                                st.error(f"Errores al actualizar: {len(errores)}")
-                                st.dataframe(pd.DataFrame(errores), use_container_width=True, hide_index=True)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"No se pudo actualizar el precio masivamente: {e}")
+    st.subheader("Reporte comparativo")
+    comparativas_bytes = build_comparativas_excel_bytes(df_filtrado_pub if not df_filtrado_pub.empty else df_filtrado_sku)
+    st.download_button(
+        "Descargar Excel comparativas",
+        data=comparativas_bytes,
+        file_name="reporte_comparativas_medidas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=False,
+        key="download_comparativas_admin",
+    )
 
 
 
@@ -1607,42 +1617,3 @@ elif modo == "Administrativa":
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo actualizar el caso: {e}")
-
-def normalize_identifier(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        s = value.strip()
-    else:
-        try:
-            if pd.isna(value):
-                return ""
-        except Exception:
-            pass
-        s = str(value).strip()
-    if s.endswith('.0'):
-        s = s[:-2]
-    return s
-
-
-def api_bulk_update_status(items: List[Dict[str, Any]], nuevo_estado: str, usuario: str) -> Dict[str, Any]:
-    normalized_items = []
-    for item in items:
-        sku = normalize_identifier(item.get('sku'))
-        mlc = normalize_identifier(item.get('mlc'))
-        if sku and mlc:
-            normalized_items.append({'sku': sku, 'mlc': mlc})
-    if not normalized_items:
-        raise RuntimeError('No hay items válidos para actualizar')
-    return api_post(
-        {
-            'action': 'bulk_update_status',
-            'items': normalized_items,
-            'nuevo_estado': nuevo_estado,
-            'usuario': usuario,
-            'comentario': '',
-            'ticket_ejecutivo': '',
-        },
-        timeout=180,
-    )
-
