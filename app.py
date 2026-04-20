@@ -1028,17 +1028,23 @@ if modo == "Administrador":
                     "sku", "mlc", "titulo", "estado_actual", "fecha_resolucion", "ticket_ejecutivo", "observacion_admin"
                 ] if c in cola_precios.columns
             ]
-            editor_precios = st.data_editor(
-                cola_precios[cols_precios].assign(seleccionar=False),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
-                disabled=cols_precios,
-                key="admin_editor_precios_resueltos",
-            )
-            seleccionados_precios = editor_precios[editor_precios["seleccionar"] == True].copy()  # noqa: E712
 
-            if st.button("Marcar seleccionados como precio_actualizado", use_container_width=True, key="btn_precio_actualizado_masivo"):
+            with st.form("form_precios_resueltos_admin"):
+                editor_precios = st.data_editor(
+                    cola_precios[cols_precios].assign(seleccionar=False),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"seleccionar": st.column_config.CheckboxColumn("Seleccionar", default=False)},
+                    disabled=cols_precios,
+                    key="admin_editor_precios_resueltos",
+                )
+                submit_precios = st.form_submit_button(
+                    "Marcar seleccionados como precio_actualizado",
+                    use_container_width=True,
+                )
+
+            if submit_precios:
+                seleccionados_precios = editor_precios[editor_precios["seleccionar"] == True].copy()  # noqa: E712
                 if seleccionados_precios.empty:
                     st.warning("Debes seleccionar al menos un caso resuelto")
                 else:
