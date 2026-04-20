@@ -1048,37 +1048,36 @@ if modo == "Administrador":
                 if seleccionados_precios.empty:
                     st.warning("Debes seleccionar al menos un caso resuelto")
                 else:
-                    ok_precios = []
-                    err_precios = []
-                    for _, row_precio in seleccionados_precios.iterrows():
+                    items_precios = [
+                        {
+                            "sku": normalize_identifier(row_precio.get("sku", "")),
+                            "mlc": normalize_identifier(row_precio.get("mlc", "")),
+                        }
+                        for _, row_precio in seleccionados_precios.iterrows()
+                    ]
+                    items_precios = [x for x in items_precios if x["sku"] and x["mlc"]]
+
+                    if not items_precios:
+                        st.error("No se pudieron leer SKU/MLC válidos desde la selección")
+                    else:
                         try:
-                            api_update_status(
-                                sku=str(row_precio.get("sku", "")),
-                                mlc=str(row_precio.get("mlc", "")),
+                            result_bulk = api_bulk_update_status(
+                                items=items_precios,
                                 nuevo_estado="precio_actualizado",
                                 usuario=usuario_actual,
-                                comentario="",
-                                ticket_ejecutivo="",
                             )
-                            ok_precios.append({
-                                "sku": str(row_precio.get("sku", "")),
-                                "mlc": str(row_precio.get("mlc", "")),
-                                "resultado": "OK",
-                            })
-                        except Exception as e:
-                            err_precios.append({
-                                "sku": str(row_precio.get("sku", "")),
-                                "mlc": str(row_precio.get("mlc", "")),
-                                "resultado": f"ERROR: {e}",
-                            })
+                            clear_caches()
+                            actualizados = int(result_bulk.get("updated", 0) or 0)
+                            errores = result_bulk.get("errors", []) or []
 
-                    clear_caches()
-                    if ok_precios:
-                        st.success(f"Marcados como precio_actualizado: {len(ok_precios)}")
-                    if err_precios:
-                        st.error(f"Errores al actualizar: {len(err_precios)}")
-                        st.dataframe(pd.DataFrame(err_precios), use_container_width=True, hide_index=True)
-                    st.rerun()
+                            if actualizados:
+                                st.success(f"Marcados como precio_actualizado: {actualizados}")
+                            if errores:
+                                st.error(f"Errores al actualizar: {len(errores)}")
+                                st.dataframe(pd.DataFrame(errores), use_container_width=True, hide_index=True)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"No se pudo actualizar el precio masivamente: {e}")
 
 
 
@@ -1608,3 +1607,42 @@ elif modo == "Administrativa":
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo actualizar el caso: {e}")
+
+def normalize_identifier(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        s = value.strip()
+    else:
+        try:
+            if pd.isna(value):
+                return ""
+        except Exception:
+            pass
+        s = str(value).strip()
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s
+
+
+def api_bulk_update_status(items: List[Dict[str, Any]], nuevo_estado: str, usuario: str) -> Dict[str, Any]:
+    normalized_items = []
+    for item in items:
+        sku = normalize_identifier(item.get('sku'))
+        mlc = normalize_identifier(item.get('mlc'))
+        if sku and mlc:
+            normalized_items.append({'sku': sku, 'mlc': mlc})
+    if not normalized_items:
+        raise RuntimeError('No hay items válidos para actualizar')
+    return api_post(
+        {
+            'action': 'bulk_update_status',
+            'items': normalized_items,
+            'nuevo_estado': nuevo_estado,
+            'usuario': usuario,
+            'comentario': '',
+            'ticket_ejecutivo': '',
+        },
+        timeout=180,
+    )
+
