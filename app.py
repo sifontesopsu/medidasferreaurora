@@ -1165,7 +1165,12 @@ elif modo == "Supervisor":
     labels = pendientes["label"].tolist()
 
     selected_label_key = "supervisor_selected_label"
-    if st.session_state.get(selected_label_key) not in labels:
+    pending_next_label_key = "supervisor_next_selected_label"
+
+    pending_next_label = st.session_state.pop(pending_next_label_key, None)
+    if pending_next_label in labels:
+        st.session_state[selected_label_key] = pending_next_label
+    elif st.session_state.get(selected_label_key) not in labels:
         st.session_state[selected_label_key] = labels[0]
 
     selected_label = st.selectbox("SKU a revisar", labels, key=selected_label_key)
@@ -1225,9 +1230,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[pending_next_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
-                st.session_state.pop(selected_label_key, None)
+                st.session_state[pending_next_label_key] = None
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
@@ -1255,9 +1260,9 @@ elif modo == "Supervisor":
                     lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
                     axis=1,
                 )
-                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
+                st.session_state[pending_next_label_key] = pendientes_restantes.iloc[0]["label"]
             else:
-                st.session_state.pop(selected_label_key, None)
+                st.session_state[pending_next_label_key] = None
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
