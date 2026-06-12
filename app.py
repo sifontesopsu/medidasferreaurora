@@ -1372,16 +1372,9 @@ elif modo == "Supervisor":
         try:
             result = api_validate_measurement_by_sku(str(fila["sku"]), usuario_actual, True, comentario)
             remove_supervisor_sku_from_queue(str(fila["sku"]))
-            pendientes_restantes = st.session_state.get("supervisor_queue_df", pd.DataFrame())
-            if isinstance(pendientes_restantes, pd.DataFrame) and not pendientes_restantes.empty:
-                pendientes_restantes = pendientes_restantes.copy()
-                pendientes_restantes["label"] = pendientes_restantes.apply(
-                    lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
-                    axis=1,
-                )
-                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
-            else:
-                st.session_state.pop(selected_label_key, None)
+            # No modificar st.session_state[selected_label_key] después de crear el selectbox.
+            # Streamlit lo bloquea y genera: cannot be modified after the widget is instantiated.
+            # En el siguiente rerun, el bloque previo al selectbox corregirá la selección si ya no existe.
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
@@ -1406,16 +1399,9 @@ elif modo == "Supervisor":
                 comentario or "Se solicita nueva evidencia",
             )
             remove_supervisor_sku_from_queue(str(fila["sku"]))
-            pendientes_restantes = st.session_state.get("supervisor_queue_df", pd.DataFrame())
-            if isinstance(pendientes_restantes, pd.DataFrame) and not pendientes_restantes.empty:
-                pendientes_restantes = pendientes_restantes.copy()
-                pendientes_restantes["label"] = pendientes_restantes.apply(
-                    lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones",
-                    axis=1,
-                )
-                st.session_state[selected_label_key] = pendientes_restantes.iloc[0]["label"]
-            else:
-                st.session_state.pop(selected_label_key, None)
+            # No modificar st.session_state[selected_label_key] después de crear el selectbox.
+            # Streamlit lo bloquea y genera: cannot be modified after the widget is instantiated.
+            # En el siguiente rerun, el bloque previo al selectbox corregirá la selección si ya no existe.
             bump_supervisor_queue_version()
             api_get_dashboard_counts.clear()
             api_get_case_detail.clear()
