@@ -107,6 +107,19 @@ def api_get_tasks_by_operator_grouped_by_sku(operador: str) -> pd.DataFrame:
     return pd.DataFrame(data.get("items", []))
 
 
+def api_mark_sku_no_stock(sku: str, operador: str, usuario: str, comentario: str = "") -> Dict[str, Any]:
+    return api_post(
+        {
+            "action": "mark_sku_no_stock",
+            "sku": sku,
+            "operador": operador,
+            "usuario": usuario,
+            "comentario": comentario,
+        },
+        timeout=120,
+    )
+
+
 @st.cache_data(ttl=15, show_spinner=False)
 def api_get_pending_validation(limit: int = 200) -> pd.DataFrame:
     data = api_post({"action": "get_pending_validation", "limit": limit}, timeout=120)
@@ -613,6 +626,15 @@ def safe_df(df: pd.DataFrame) -> pd.DataFrame:
     return df if isinstance(df, pd.DataFrame) and not df.empty else pd.DataFrame()
 
 
+def row_is_no_stock(row: Any) -> bool:
+    try:
+        sin_stock_value = str(row.get("sin_stock", "")).strip().lower()
+        prioridad_value = str(row.get("prioridad", "")).strip().lower().replace("_", " ")
+    except Exception:
+        return False
+    return sin_stock_value in {"true", "1", "si", "sí"} or "sin stock" in prioridad_value
+
+
 def badge_estado(estado: str) -> str:
     color_map = {
         "pendiente_medicion": "#f59e0b",
@@ -1114,13 +1136,23 @@ elif modo == "Operador":
         st.stop()
 
     tareas = safe_df(tareas)
+
+    if not tareas.empty:
+        tareas = tareas.copy()
+        tareas["_sin_stock_order"] = tareas.apply(row_is_no_stock, axis=1)
+        tareas = tareas.sort_values(["_sin_stock_order", "sku"], ascending=[True, True]).drop(columns=["_sin_stock_order"])
+
     st.metric("Mis SKUs pendientes", len(tareas))
 
     if tareas.empty:
         st.info("No tienes tareas pendientes")
         st.stop()
 
-    tareas["label"] = tareas.apply(lambda r: f"{r['sku']} | {r['titulo']} | {r.get('publicaciones_count', 0)} publicaciones", axis=1)
+    def build_operator_label(row: pd.Series) -> str:
+        marker = " | SIN STOCK" if row_is_no_stock(row) else ""
+        return f"{row['sku']}{marker} | {row['titulo']} | {row.get('publicaciones_count', 0)} publicaciones"
+
+    tareas["label"] = tareas.apply(build_operator_label, axis=1)
     selected_label = st.selectbox("Selecciona SKU", tareas["label"].tolist())
     fila = tareas[tareas["label"] == selected_label].iloc[0]
 
@@ -1141,6 +1173,39 @@ elif modo == "Operador":
             f"**Dimensiones ML:** {fila.get('alto_ml_cm', '')} x {fila.get('ancho_ml_cm', '')} x {fila.get('profundidad_ml_cm', '')} cm"
         )
         st.markdown(badge_estado(str(fila.get("estado_actual", ""))), unsafe_allow_html=True)
+
+    sku_sin_stock = row_is_no_stock(fila)
+    if sku_sin_stock:
+        st.warning("Este SKU está marcado como SIN STOCK. Se mantiene pendiente, pero queda al final de la cola del operador.")
+
+    with st.form(f"form_sin_stock_{fila['sku']}"):
+        observacion_sin_stock = st.text_input(
+            "Observación sin stock",
+            value="Producto sin stock físico al momento de medir",
+            key=f"observacion_sin_stock_{fila['sku']}",
+        )
+        marcar_sin_stock = st.form_submit_button(
+            "Marcar SKU sin stock y enviarlo al final",
+            use_container_width=True,
+            disabled=sku_sin_stock,
+        )
+
+    if marcar_sin_stock:
+        try:
+            result = api_mark_sku_no_stock(
+                sku=str(fila["sku"]),
+                operador=nombre_operador.strip(),
+                usuario=usuario_actual,
+                comentario=observacion_sin_stock,
+            )
+            clear_caches()
+            st.success(
+                f"SKU marcado sin stock. Publicaciones afectadas: {result.get('affected', 0)}. "
+                "Quedará al final de la cola."
+            )
+            st.rerun()
+        except Exception as e:
+            st.error(f"No se pudo marcar sin stock: {e}")
 
     with st.form("form_medicion_fast"):
         st.markdown("### Ingresar medidas reales")
@@ -1229,6 +1294,14 @@ elif modo == "Operador":
 elif modo == "Supervisor":
     st.title("Módulo Supervisor")
 
+    supervisor_flash = st.session_state.pop("supervisor_flash", None)
+    if isinstance(supervisor_flash, dict):
+        flash_message = supervisor_flash.get("message", "")
+        if supervisor_flash.get("type") == "warning":
+            st.warning(flash_message)
+        else:
+            st.success(flash_message)
+
     try:
         pendientes = refresh_supervisor_queue(limit=300)
     except Exception as e:
@@ -1315,10 +1388,14 @@ elif modo == "Supervisor":
             api_get_case_detail_by_sku.clear()
             api_get_pending_validation.clear()
             api_get_pending_validation_grouped_by_sku.clear()
-            st.success(f"SKU aprobado. Publicaciones afectadas: {result.get('affected', 0)}")
-            st.rerun()
+            st.session_state["supervisor_flash"] = {
+                "type": "success",
+                "message": f"SKU aprobado. Publicaciones afectadas: {result.get('affected', 0)}",
+            }
         except Exception as e:
             st.error(f"No se pudo aprobar: {e}")
+        else:
+            st.rerun()
 
     if devolver:
         try:
@@ -1345,10 +1422,14 @@ elif modo == "Supervisor":
             api_get_case_detail_by_sku.clear()
             api_get_pending_validation.clear()
             api_get_pending_validation_grouped_by_sku.clear()
-            st.warning(f"SKU devuelto a medición. Publicaciones afectadas: {result.get('affected', 0)}")
-            st.rerun()
+            st.session_state["supervisor_flash"] = {
+                "type": "warning",
+                "message": f"SKU devuelto a medición. Publicaciones afectadas: {result.get('affected', 0)}",
+            }
         except Exception as e:
             st.error(f"No se pudo devolver: {e}")
+        else:
+            st.rerun()
 
 
 # =========================================================
