@@ -1516,92 +1516,12 @@ if modo == "Administrador":
 elif modo == "Operador":
     st.title("Módulo Operador PDA")
 
-    if rol == "operador":
-        nombre_operador = operador_codigo
-        st.text_input("Operador", value=nombre_operador, disabled=True, key="nombre_operador_bloqueado")
-    else:
-        if st.button("Recargar lista de operadores", key="recargar_operadores_pda", use_container_width=True):
-            api_get_active_operators.clear()
-            st.rerun()
-
-        operadores_df = safe_df(api_get_active_operators())
-        if operadores_df.empty:
-            st.warning(
-                "No hay operadores activos. Revisa la hoja usuarios: rol=operador, activo=TRUE/1/SI "
-                "y operador_codigo con valor."
-            )
-            st.stop()
-
-        for columna in ["usuario_id", "nombre", "operador_codigo"]:
-            if columna not in operadores_df.columns:
-                operadores_df[columna] = ""
-            operadores_df[columna] = operadores_df[columna].fillna("").astype(str).str.strip()
-
-        operadores_df["operador_codigo"] = operadores_df["operador_codigo"].where(
-            operadores_df["operador_codigo"].ne(""), operadores_df["usuario_id"]
-        )
-        operadores_df["nombre"] = operadores_df["nombre"].where(
-            operadores_df["nombre"].ne(""), operadores_df["operador_codigo"]
-        )
-        operadores_df = (
-            operadores_df.loc[operadores_df["operador_codigo"].ne("")]
-            .drop_duplicates(subset=["operador_codigo"], keep="first")
-            .sort_values(["nombre", "operador_codigo"], kind="stable")
-            .reset_index(drop=True)
-        )
-
-        if operadores_df.empty:
-            st.warning("Los operadores activos no tienen usuario ni código de operador configurado")
-            st.stop()
-
-        operadores_df["label"] = operadores_df.apply(
-            lambda row: (
-                f"{row.get('nombre', '')} | {row.get('operador_codigo', '')}"
-                + (f" | {row.get('usuario_id', '')}" if row.get("usuario_id", "") not in {"", row.get("operador_codigo", "")} else "")
-            ),
-            axis=1,
-        )
-        operadores_df["_buscar"] = operadores_df.apply(
-            lambda row: normalize_inventory_header(
-                f"{row.get('nombre', '')} {row.get('operador_codigo', '')} {row.get('usuario_id', '')}"
-            ),
-            axis=1,
-        )
-
-        st.caption(f"Operadores activos encontrados: {len(operadores_df)}")
-        busqueda_operador = st.text_input(
-            "Buscar operador",
-            placeholder="Escribe el nombre, usuario o código del operador",
-            key="buscar_operador_admin_pda",
-        )
-        termino_operador = normalize_inventory_header(busqueda_operador)
-        operadores_filtrados = operadores_df
-        if termino_operador:
-            palabras = [p for p in termino_operador.split(" ") if p]
-            mascara = operadores_df["_buscar"].apply(lambda texto: all(p in texto for p in palabras))
-            operadores_filtrados = operadores_df.loc[mascara].reset_index(drop=True)
-
-        if operadores_filtrados.empty:
-            st.warning(f"No se encontraron operadores para: {busqueda_operador.strip()}")
-            st.stop()
-
-        opciones_operador = operadores_filtrados["label"].tolist()
-        seleccion_actual = st.session_state.get("nombre_operador_admin")
-        if seleccion_actual not in opciones_operador:
-            st.session_state["nombre_operador_admin"] = opciones_operador[0]
-
-        selected_operator_label = st.selectbox(
-            "Operador a visualizar",
-            opciones_operador,
-            index=opciones_operador.index(st.session_state["nombre_operador_admin"]),
-            key="nombre_operador_admin",
-        )
-        nombre_operador = str(
-            operadores_filtrados.loc[
-                operadores_filtrados["label"] == selected_operator_label,
-                "operador_codigo",
-            ].iloc[0]
-        )
+    nombre_operador = st.text_input(
+        "Nombre operador",
+        value=st.session_state.get("nombre_operador", operador_codigo),
+        key="nombre_operador",
+        placeholder="Escribe el nombre o código del operador",
+    )
 
     if not nombre_operador.strip():
         st.warning("Debes indicar un operador para procesar la tarea")
