@@ -1385,22 +1385,12 @@ if modo == "Administrador":
     st.caption(f"Resultados encontrados: {len(df_filtrado_sku)} SKUs | {len(df_filtrado_pub)} publicaciones")
 
     st.subheader("Asignación de tareas por SKU")
-    try:
-        operadores_df = safe_df(api_get_active_operators())
-    except Exception as e:
-        st.error(f"No se pudo cargar la lista de operadores: {e}")
-        st.stop()
-    if operadores_df.empty:
-        st.warning("No hay usuarios activos con rol operador")
-        st.stop()
-    operadores_df["label"] = operadores_df.apply(
-        lambda row: f"{row.get('nombre', '')} | {row.get('operador_codigo', '')}",
-        axis=1,
-    )
-    operador_label_to_code = dict(zip(operadores_df["label"], operadores_df["operador_codigo"].astype(str)))
     with st.form("admin_assign_form"):
-        operador_label = st.selectbox("Asignar a operador", operadores_df["label"].tolist())
-        operador_destino = operador_label_to_code.get(operador_label, "")
+        operador_destino = st.text_input(
+            "Asignar a operador",
+            value="",
+            placeholder="Escribe el mismo nombre o código que usará el operador",
+        )
         cols_view = [c for c in ["sku", "titulo", "ventas", "estado_actual", "operador_asignado", "publicaciones_count"] if c in df_filtrado_sku.columns]
         edited = st.data_editor(
             df_filtrado_sku[cols_view].assign(seleccionar=False),
